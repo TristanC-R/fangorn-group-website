@@ -1,6 +1,25 @@
 import { useEffect, useState } from "react";
+import fullLogo from "../../Fangorn Assets/Full Logo - Transparent 1000 dpi.png";
+import treeLogo from "../../Fangorn Assets/Grey logo tree only.png";
 
 const SECTIONS = ["home", "services", "projects", "team", "contact"];
+
+/** GIX Option 1 (Coolors) + derived neutrals */
+const brand = {
+  sage: "#C3D3C4",
+  muted: "#839788",
+  forest: "#104E3F",
+  moss: "#649A5C",
+  orange: "#EC9A29",
+  mossDark: "#4A8443",
+  body: "#3A4F47",
+  bodySoft: "#54695F",
+  bgSection: "#EFF4F0",
+  border: "#D5E5D7",
+  borderSoft: "#DCE9DE",
+  tagBorder: "#CADBD0",
+  white: "#FFFFFF",
+};
 
 const NoiseOverlay = () => (
   <svg
@@ -35,7 +54,7 @@ const GridLine = ({ delay, horizontal, position }) => (
       [horizontal ? "left" : "top"]: 0,
       [horizontal ? "width" : "height"]: "100%",
       [horizontal ? "height" : "width"]: "1px",
-      background: "rgba(27,58,45,0.04)",
+      background: "rgba(16,78,63,0.06)",
       animation: `fadeInLine 2s ${delay}s ease forwards`,
       opacity: 0,
     }}
@@ -46,12 +65,25 @@ export default function FangornWebsite() {
   const [activeSection, setActiveSection] = useState("home");
   const [scrollY, setScrollY] = useState(0);
   const [hoveredService, setHoveredService] = useState(null);
+  const [isMobileNav, setIsMobileNav] = useState(false);
 
   useEffect(() => {
     const handleScroll = () => setScrollY(window.scrollY);
     window.addEventListener("scroll", handleScroll, { passive: true });
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const apply = () => setIsMobileNav(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+
+  const navLogoSrc = isMobileNav || scrollY > 72 ? treeLogo : fullLogo;
+  const navLogoHeight = isMobileNav ? 40 : scrollY > 72 ? 38 : 46;
+  const navLogoMaxWidth = isMobileNav ? 200 : scrollY > 72 ? 52 : 280;
 
   const services = [
     {
@@ -110,7 +142,7 @@ export default function FangornWebsite() {
       category: "Remote Sensing",
       description:
         "Ongoing high-resolution LiDAR and optical surveying of cemetery sites. Automated headstone measurement, movement monitoring, tree carbon assessment, and OCR-based transcription of historical records into structured databases.",
-      color: "#2D5A3F",
+      color: brand.moss,
     },
     {
       title: "Crop Canopy Cover Research",
@@ -118,7 +150,7 @@ export default function FangornWebsite() {
       category: "Agricultural Analytics",
       description:
         "Funded research programme using UAV-mounted sensors to quantify crop canopy cover, monitor growth stages, and provide precision agriculture insights for large-scale cereal production.",
-      color: "#8A7B5B",
+      color: brand.orange,
     },
     {
       title: "Sinkhole Detection & Quantification",
@@ -126,15 +158,15 @@ export default function FangornWebsite() {
       category: "Geospatial Analytics",
       description:
         "LiDAR-based detection and volumetric quantification of sinkholes across large survey areas. Change detection analysis and risk assessment for geotechnical planning.",
-      color: "#3A6A6A",
+      color: brand.forest,
     },
     {
-      title: "Cefetra Trading Platform",
-      client: "Cefetra",
-      category: "Software Development",
+      title: "Evaluating Agricultural Yield Reductions",
+      client: "Scottish Power",
+      category: "Agricultural Analytics",
       description:
-        "Full-stack commodity trading platform managing grain trading workflows, client relationships, operational data integration, and real-time reporting dashboards.",
-      color: "#5A4A6A",
+        "Consultancy report assessing drivers of agricultural yield reduction — bringing together crop and operational data to evaluate impacts, support decision-making, and document findings for stakeholders (final revision, October 2024).",
+      color: brand.muted,
     },
     {
       title: "Account Reconciliation Agent",
@@ -142,7 +174,7 @@ export default function FangornWebsite() {
       category: "AI Agents",
       description:
         "Autonomous AI agent for financial account reconciliation — matching transactions, flagging discrepancies, and generating exception reports with minimal human oversight.",
-      color: "#6A4A5A",
+      color: brand.mossDark,
     },
     {
       title: "Business Research & Web Scraping",
@@ -150,7 +182,7 @@ export default function FangornWebsite() {
       category: "Data Operations",
       description:
         "Automated web scraping pipelines and structured business intelligence research, delivering clean datasets for market analysis, competitor tracking, and lead generation.",
-      color: "#4A6A5A",
+      color: "#4A7A6A",
     },
   ];
 
@@ -158,8 +190,8 @@ export default function FangornWebsite() {
     <div
       style={{
         fontFamily: "'Instrument Serif', Georgia, serif",
-        background: "#FFFFFF",
-        color: "#4A5A50",
+        background: brand.white,
+        color: brand.body,
         minHeight: "100vh",
         position: "relative",
       }}
@@ -176,7 +208,7 @@ export default function FangornWebsite() {
         @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
         @keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 
-        ::selection { background: #D4E8D4; color: #1B3A2D; }
+        ::selection { background: ${brand.sage}; color: ${brand.forest}; }
 
         .nav-link {
           font-family: 'DM Sans', sans-serif;
@@ -184,29 +216,29 @@ export default function FangornWebsite() {
           font-weight: 400;
           letter-spacing: 0.12em;
           text-transform: uppercase;
-          color: #7A8A80;
+          color: ${brand.muted};
           text-decoration: none;
           padding: 8px 0;
           position: relative;
           transition: color 0.3s;
           cursor: pointer;
         }
-        .nav-link:hover, .nav-link.active { color: #1B3A2D; }
+        .nav-link:hover, .nav-link.active { color: ${brand.forest}; }
         .nav-link::after {
           content: '';
           position: absolute;
           bottom: 0; left: 0;
           width: 0; height: 1px;
-          background: #1B3A2D;
+          background: ${brand.forest};
           transition: width 0.3s;
         }
         .nav-link:hover::after, .nav-link.active::after { width: 100%; }
 
         .service-card {
           padding: 36px;
-          border: 1px solid #E4EBE4;
+          border: 1px solid ${brand.border};
           border-radius: 2px;
-          background: #FFFFFF;
+          background: ${brand.white};
           transition: all 0.4s cubic-bezier(0.23,1,0.32,1);
           cursor: default;
           position: relative;
@@ -217,30 +249,30 @@ export default function FangornWebsite() {
           position: absolute;
           top: 0; left: 0;
           width: 100%; height: 2px;
-          background: linear-gradient(90deg, transparent, #2D5A3F, transparent);
+          background: linear-gradient(90deg, transparent, ${brand.moss}, transparent);
           transform: scaleX(0);
           transition: transform 0.4s;
         }
         .service-card:hover {
-          border-color: #C4D4C4;
-          background: #F7F9F5;
+          border-color: ${brand.sage};
+          background: ${brand.bgSection};
           transform: translateY(-4px);
-          box-shadow: 0 12px 40px rgba(27,58,45,0.06);
+          box-shadow: 0 12px 40px rgba(16,78,63,0.08);
         }
         .service-card:hover::before { transform: scaleX(1); }
 
         .project-card {
           padding: 40px;
-          border: 1px solid #E4EBE4;
-          background: #FFFFFF;
+          border: 1px solid ${brand.border};
+          background: ${brand.white};
           border-radius: 2px;
           transition: all 0.4s;
           cursor: pointer;
         }
         .project-card:hover {
-          border-color: #C4D4C4;
+          border-color: ${brand.sage};
           transform: translateY(-2px);
-          box-shadow: 0 8px 30px rgba(27,58,45,0.05);
+          box-shadow: 0 8px 30px rgba(16,78,63,0.06);
         }
 
         .tag {
@@ -248,9 +280,9 @@ export default function FangornWebsite() {
           font-size: 10px;
           letter-spacing: 0.06em;
           padding: 4px 10px;
-          border: 1px solid #D4DDD4;
+          border: 1px solid ${brand.tagBorder};
           border-radius: 1px;
-          color: #7A8A80;
+          color: ${brand.muted};
           display: inline-block;
         }
 
@@ -262,25 +294,25 @@ export default function FangornWebsite() {
           text-transform: uppercase;
           padding: 16px 40px;
           background: transparent;
-          border: 1px solid #2D5A3F;
-          color: #1B3A2D;
+          border: 1px solid ${brand.moss};
+          color: ${brand.forest};
           cursor: pointer;
           transition: all 0.3s;
           text-decoration: none;
           display: inline-block;
         }
         .cta-btn:hover {
-          background: #2D5A3F;
-          color: #FFFFFF;
+          background: ${brand.moss};
+          color: ${brand.white};
         }
         .cta-btn.filled {
-          background: #1B3A2D;
-          border-color: #1B3A2D;
-          color: #FFFFFF;
+          background: ${brand.forest};
+          border-color: ${brand.forest};
+          color: ${brand.white};
         }
         .cta-btn.filled:hover {
-          background: #2D5A3F;
-          border-color: #2D5A3F;
+          background: ${brand.mossDark};
+          border-color: ${brand.mossDark};
         }
 
         .marquee-track {
@@ -288,6 +320,8 @@ export default function FangornWebsite() {
           animation: marquee 30s linear infinite;
           width: max-content;
         }
+
+        .nav-brand img { display: block; }
 
         @media (max-width: 768px) {
           .service-grid { grid-template-columns: 1fr !important; }
@@ -314,34 +348,40 @@ export default function FangornWebsite() {
           alignItems: "center",
           background: scrollY > 60 ? "rgba(255,255,255,0.92)" : "transparent",
           backdropFilter: scrollY > 60 ? "blur(20px)" : "none",
-          borderBottom: scrollY > 60 ? "1px solid #E4EBE4" : "none",
+          borderBottom: scrollY > 60 ? `1px solid ${brand.border}` : "none",
           transition: "all 0.4s",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span
+        <button
+          type="button"
+          className="nav-brand"
+          onClick={() => {
+            setActiveSection("home");
+            document.getElementById("home")?.scrollIntoView({ behavior: "smooth" });
+          }}
+          style={{
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            padding: 0,
+            margin: 0,
+            display: "flex",
+            alignItems: "center",
+          }}
+          aria-label="Fangorn Group home"
+        >
+          <img
+            src={navLogoSrc}
+            alt="Fangorn Group"
             style={{
-              fontFamily: "'Instrument Serif', serif",
-              fontSize: 26,
-              color: "#1B3A2D",
-              letterSpacing: "-0.02em",
+              height: navLogoHeight,
+              width: "auto",
+              maxWidth: navLogoMaxWidth,
+              objectFit: "contain",
+              transition: "height 0.35s ease, max-width 0.35s ease",
             }}
-          >
-            Fangorn
-          </span>
-          <span
-            style={{
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 9,
-              color: "#2D5A3F",
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-              marginTop: 6,
-            }}
-          >
-            Group
-          </span>
-        </div>
+          />
+        </button>
         <div
           className="nav-links"
           style={{ display: "flex", gap: 32, alignItems: "center" }}
@@ -371,7 +411,7 @@ export default function FangornWebsite() {
           justifyContent: "center",
           padding: "140px 48px 80px",
           position: "relative",
-          background: "#F7F9F5",
+          background: brand.bgSection,
         }}
       >
         <GridLine horizontal position="20%" delay={0.2} />
@@ -386,7 +426,7 @@ export default function FangornWebsite() {
             style={{
               fontFamily: "'JetBrains Mono', monospace",
               fontSize: 11,
-              color: "#2D5A3F",
+              color: brand.moss,
               letterSpacing: "0.2em",
               textTransform: "uppercase",
               marginBottom: 32,
@@ -404,7 +444,7 @@ export default function FangornWebsite() {
               fontSize: 82,
               fontWeight: 400,
               lineHeight: 1.05,
-              color: "#1B3A2D",
+              color: brand.forest,
               letterSpacing: "-0.03em",
               marginBottom: 32,
               animation: "fadeUp 1s 0.4s ease forwards",
@@ -413,7 +453,7 @@ export default function FangornWebsite() {
           >
             We turn complex data
             <br />
-            <span style={{ fontStyle: "italic", color: "#2D5A3F" }}>
+            <span style={{ fontStyle: "italic", color: brand.orange }}>
               into clear decisions.
             </span>
           </h1>
@@ -425,7 +465,7 @@ export default function FangornWebsite() {
               fontSize: 19,
               fontWeight: 300,
               lineHeight: 1.7,
-              color: "#5A6A60",
+              color: brand.bodySoft,
               maxWidth: 620,
               marginBottom: 48,
               animation: "fadeUp 1s 0.6s ease forwards",
@@ -477,13 +517,30 @@ export default function FangornWebsite() {
             right: 48,
             fontFamily: "'JetBrains Mono', monospace",
             fontSize: 11,
-            color: "rgba(27,58,45,0.15)",
+            color: "rgba(16,78,63,0.14)",
             textAlign: "right",
             lineHeight: 2,
             animation: "fadeIn 2s 1.2s ease forwards",
             opacity: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-end",
+            gap: 12,
           }}
         >
+          <img
+            src={treeLogo}
+            alt="Fangorn mark"
+            width={56}
+            height={56}
+            style={{
+              width: 56,
+              height: "auto",
+              maxHeight: 64,
+              objectFit: "contain",
+              opacity: 0.55,
+            }}
+          />
           51.5074° N
           <br />
           0.1278° W
@@ -492,7 +549,7 @@ export default function FangornWebsite() {
             style={{
               animation: "pulse 3s infinite",
               display: "inline-block",
-              color: "#2D5A3F",
+              color: brand.orange,
             }}
           >
             ●
@@ -503,11 +560,11 @@ export default function FangornWebsite() {
 
       <div
         style={{
-          borderTop: "1px solid #E4EBE4",
-          borderBottom: "1px solid #E4EBE4",
+          borderTop: `1px solid ${brand.border}`,
+          borderBottom: `1px solid ${brand.border}`,
           padding: "14px 0",
           overflow: "hidden",
-          background: "#FFFFFF",
+          background: brand.white,
         }}
       >
         <div className="marquee-track">
@@ -536,7 +593,7 @@ export default function FangornWebsite() {
                   style={{
                     fontFamily: "'JetBrains Mono', monospace",
                     fontSize: 11,
-                    color: "#2D5A3F",
+                    color: brand.moss,
                     letterSpacing: "0.1em",
                     textTransform: "uppercase",
                     whiteSpace: "nowrap",
@@ -554,7 +611,7 @@ export default function FangornWebsite() {
       <section
         id="services"
         className="section-padding"
-        style={{ padding: "120px 48px", background: "#FFFFFF" }}
+        style={{ padding: "120px 48px", background: brand.white }}
       >
         <div style={{ maxWidth: 1200, margin: "0 auto" }}>
           <div style={{ marginBottom: 80 }}>
@@ -562,7 +619,7 @@ export default function FangornWebsite() {
               style={{
                 fontFamily: "'JetBrains Mono', monospace",
                 fontSize: 11,
-                color: "#2D5A3F",
+                color: brand.moss,
                 letterSpacing: "0.2em",
                 textTransform: "uppercase",
               }}
@@ -574,7 +631,7 @@ export default function FangornWebsite() {
                 fontFamily: "'Instrument Serif', serif",
                 fontSize: 52,
                 fontWeight: 400,
-                color: "#1B3A2D",
+                color: brand.forest,
                 letterSpacing: "-0.02em",
                 marginTop: 16,
                 lineHeight: 1.1,
@@ -587,7 +644,7 @@ export default function FangornWebsite() {
                 fontFamily: "'DM Sans', sans-serif",
                 fontSize: 16,
                 fontWeight: 300,
-                color: "#5A6A60",
+                color: brand.bodySoft,
                 maxWidth: 560,
                 marginTop: 16,
                 lineHeight: 1.7,
@@ -618,7 +675,7 @@ export default function FangornWebsite() {
                   style={{
                     fontFamily: "'Instrument Serif', serif",
                     fontSize: 32,
-                    color: "#2D5A3F",
+                    color: brand.moss,
                     marginBottom: 20,
                     transition: "transform 0.4s",
                     transform:
@@ -632,7 +689,7 @@ export default function FangornWebsite() {
                     fontFamily: "'DM Sans', sans-serif",
                     fontSize: 17,
                     fontWeight: 500,
-                    color: "#1B3A2D",
+                    color: brand.forest,
                     marginBottom: 12,
                     letterSpacing: "0.01em",
                   }}
@@ -644,7 +701,7 @@ export default function FangornWebsite() {
                     fontFamily: "'DM Sans', sans-serif",
                     fontSize: 14,
                     fontWeight: 300,
-                    color: "#5A6A60",
+                    color: brand.bodySoft,
                     lineHeight: 1.7,
                     marginBottom: 20,
                   }}
@@ -666,10 +723,10 @@ export default function FangornWebsite() {
 
       <div
         style={{
-          borderTop: "1px solid #E4EBE4",
-          borderBottom: "1px solid #E4EBE4",
+          borderTop: `1px solid ${brand.border}`,
+          borderBottom: `1px solid ${brand.border}`,
           padding: "48px",
-          background: "#F7F9F5",
+          background: brand.bgSection,
         }}
       >
         <div
@@ -693,7 +750,7 @@ export default function FangornWebsite() {
                 style={{
                   fontFamily: "'Instrument Serif', serif",
                   fontSize: 42,
-                  color: "#1B3A2D",
+                  color: brand.forest,
                   letterSpacing: "-0.02em",
                 }}
               >
@@ -704,7 +761,7 @@ export default function FangornWebsite() {
                   fontFamily: "'DM Sans', sans-serif",
                   fontSize: 13,
                   fontWeight: 500,
-                  color: "#2D5A3F",
+                  color: brand.moss,
                   textTransform: "uppercase",
                   letterSpacing: "0.1em",
                   marginTop: 4,
@@ -716,7 +773,7 @@ export default function FangornWebsite() {
                 style={{
                   fontFamily: "'JetBrains Mono', monospace",
                   fontSize: 10,
-                  color: "#7A8A80",
+                  color: brand.muted,
                   marginTop: 4,
                 }}
               >
@@ -730,7 +787,7 @@ export default function FangornWebsite() {
       <section
         id="projects"
         className="section-padding"
-        style={{ padding: "120px 48px", background: "#FFFFFF" }}
+        style={{ padding: "120px 48px", background: brand.white }}
       >
         <div style={{ maxWidth: 1200, margin: "0 auto" }}>
           <div style={{ marginBottom: 80 }}>
@@ -738,7 +795,7 @@ export default function FangornWebsite() {
               style={{
                 fontFamily: "'JetBrains Mono', monospace",
                 fontSize: 11,
-                color: "#2D5A3F",
+                color: brand.moss,
                 letterSpacing: "0.2em",
                 textTransform: "uppercase",
               }}
@@ -750,7 +807,7 @@ export default function FangornWebsite() {
                 fontFamily: "'Instrument Serif', serif",
                 fontSize: 52,
                 fontWeight: 400,
-                color: "#1B3A2D",
+                color: brand.forest,
                 letterSpacing: "-0.02em",
                 marginTop: 16,
                 lineHeight: 1.1,
@@ -763,7 +820,7 @@ export default function FangornWebsite() {
                 fontFamily: "'DM Sans', sans-serif",
                 fontSize: 16,
                 fontWeight: 300,
-                color: "#5A6A60",
+                color: brand.bodySoft,
                 maxWidth: 560,
                 marginTop: 16,
                 lineHeight: 1.7,
@@ -802,7 +859,7 @@ export default function FangornWebsite() {
                     style={{
                       fontFamily: "'JetBrains Mono', monospace",
                       fontSize: 10,
-                      color: "#7A8A80",
+                      color: brand.muted,
                     }}
                   >
                     {p.client}
@@ -813,7 +870,7 @@ export default function FangornWebsite() {
                     fontFamily: "'Instrument Serif', serif",
                     fontSize: 24,
                     fontWeight: 400,
-                    color: "#1B3A2D",
+                    color: brand.forest,
                     marginBottom: 14,
                     letterSpacing: "-0.01em",
                   }}
@@ -825,7 +882,7 @@ export default function FangornWebsite() {
                     fontFamily: "'DM Sans', sans-serif",
                     fontSize: 14,
                     fontWeight: 300,
-                    color: "#5A6A60",
+                    color: brand.bodySoft,
                     lineHeight: 1.7,
                   }}
                 >
@@ -842,8 +899,8 @@ export default function FangornWebsite() {
         className="section-padding"
         style={{
           padding: "120px 48px",
-          borderTop: "1px solid #E4EBE4",
-          background: "#F7F9F5",
+          borderTop: `1px solid ${brand.border}`,
+          background: brand.bgSection,
         }}
       >
         <div style={{ maxWidth: 1200, margin: "0 auto" }}>
@@ -852,7 +909,7 @@ export default function FangornWebsite() {
               style={{
                 fontFamily: "'JetBrains Mono', monospace",
                 fontSize: 11,
-                color: "#2D5A3F",
+                color: brand.moss,
                 letterSpacing: "0.2em",
                 textTransform: "uppercase",
               }}
@@ -864,7 +921,7 @@ export default function FangornWebsite() {
                 fontFamily: "'Instrument Serif', serif",
                 fontSize: 52,
                 fontWeight: 400,
-                color: "#1B3A2D",
+                color: brand.forest,
                 letterSpacing: "-0.02em",
                 marginTop: 16,
                 lineHeight: 1.1,
@@ -889,7 +946,7 @@ export default function FangornWebsite() {
                   fontFamily: "'DM Sans', sans-serif",
                   fontSize: 16,
                   fontWeight: 300,
-                  color: "#4A5A50",
+                  color: brand.body,
                   lineHeight: 1.8,
                   marginBottom: 24,
                 }}
@@ -904,7 +961,7 @@ export default function FangornWebsite() {
                   fontFamily: "'DM Sans', sans-serif",
                   fontSize: 16,
                   fontWeight: 300,
-                  color: "#4A5A50",
+                  color: brand.body,
                   lineHeight: 1.8,
                   marginBottom: 24,
                 }}
@@ -919,7 +976,7 @@ export default function FangornWebsite() {
                   fontFamily: "'DM Sans', sans-serif",
                   fontSize: 16,
                   fontWeight: 300,
-                  color: "#4A5A50",
+                  color: brand.body,
                   lineHeight: 1.8,
                 }}
               >
@@ -933,15 +990,15 @@ export default function FangornWebsite() {
             <div
               style={{
                 padding: 40,
-                border: "1px solid #E4EBE4",
-                background: "#FFFFFF",
+                border: `1px solid ${brand.border}`,
+                background: brand.white,
               }}
             >
               <div
                 style={{
                   fontFamily: "'JetBrains Mono', monospace",
                   fontSize: 10,
-                  color: "#2D5A3F",
+                  color: brand.moss,
                   letterSpacing: "0.15em",
                   textTransform: "uppercase",
                   marginBottom: 24,
@@ -953,7 +1010,7 @@ export default function FangornWebsite() {
                 style={{
                   fontFamily: "'Instrument Serif', serif",
                   fontSize: 22,
-                  color: "#1B3A2D",
+                  color: brand.forest,
                   marginBottom: 6,
                 }}
               >
@@ -963,7 +1020,7 @@ export default function FangornWebsite() {
                 style={{
                   fontFamily: "'DM Sans', sans-serif",
                   fontSize: 13,
-                  color: "#5A6A60",
+                  color: brand.bodySoft,
                   marginBottom: 24,
                 }}
               >
@@ -982,9 +1039,9 @@ export default function FangornWebsite() {
                       fontFamily: "'DM Sans', sans-serif",
                       fontSize: 13,
                       fontWeight: 300,
-                      color: "#5A6A60",
+                      color: brand.bodySoft,
                       paddingLeft: 16,
-                      borderLeft: "2px solid #E8F0E4",
+                      borderLeft: `2px solid ${brand.borderSoft}`,
                     }}
                   >
                     {item}
@@ -996,14 +1053,14 @@ export default function FangornWebsite() {
                 style={{
                   marginTop: 32,
                   paddingTop: 24,
-                  borderTop: "1px solid #E4EBE4",
+                  borderTop: `1px solid ${brand.border}`,
                 }}
               >
                 <div
                   style={{
                     fontFamily: "'JetBrains Mono', monospace",
                     fontSize: 10,
-                    color: "#2D5A3F",
+                    color: brand.moss,
                     letterSpacing: "0.15em",
                     textTransform: "uppercase",
                     marginBottom: 16,
@@ -1015,7 +1072,7 @@ export default function FangornWebsite() {
                   style={{
                     fontFamily: "'Instrument Serif', serif",
                     fontSize: 18,
-                    color: "#1B3A2D",
+                    color: brand.forest,
                     marginBottom: 6,
                   }}
                 >
@@ -1026,7 +1083,7 @@ export default function FangornWebsite() {
                     fontFamily: "'DM Sans', sans-serif",
                     fontSize: 13,
                     fontWeight: 300,
-                    color: "#5A6A60",
+                    color: brand.bodySoft,
                     lineHeight: 1.7,
                   }}
                 >
@@ -1044,8 +1101,8 @@ export default function FangornWebsite() {
         className="section-padding"
         style={{
           padding: "120px 48px",
-          borderTop: "1px solid #E4EBE4",
-          background: "#FFFFFF",
+          borderTop: `1px solid ${brand.border}`,
+          background: brand.white,
         }}
       >
         <div style={{ maxWidth: 1200, margin: "0 auto" }}>
@@ -1063,7 +1120,7 @@ export default function FangornWebsite() {
                 style={{
                   fontFamily: "'JetBrains Mono', monospace",
                   fontSize: 11,
-                  color: "#2D5A3F",
+                  color: brand.moss,
                   letterSpacing: "0.2em",
                   textTransform: "uppercase",
                 }}
@@ -1075,7 +1132,7 @@ export default function FangornWebsite() {
                   fontFamily: "'Instrument Serif', serif",
                   fontSize: 52,
                   fontWeight: 400,
-                  color: "#1B3A2D",
+                  color: brand.forest,
                   letterSpacing: "-0.02em",
                   marginTop: 16,
                   lineHeight: 1.1,
@@ -1084,7 +1141,7 @@ export default function FangornWebsite() {
               >
                 Let's talk about
                 <br />
-                <span style={{ fontStyle: "italic", color: "#2D5A3F" }}>
+                <span style={{ fontStyle: "italic", color: brand.orange }}>
                   your data.
                 </span>
               </h2>
@@ -1093,7 +1150,7 @@ export default function FangornWebsite() {
                   fontFamily: "'DM Sans', sans-serif",
                   fontSize: 16,
                   fontWeight: 300,
-                  color: "#5A6A60",
+                  color: brand.bodySoft,
                   lineHeight: 1.7,
                   marginBottom: 40,
                 }}
@@ -1109,8 +1166,8 @@ export default function FangornWebsite() {
             <div
               style={{
                 padding: 48,
-                border: "1px solid #E4EBE4",
-                background: "#F7F9F5",
+                border: `1px solid ${brand.border}`,
+                background: brand.bgSection,
               }}
             >
               {[
@@ -1130,7 +1187,7 @@ export default function FangornWebsite() {
                   key={item.label}
                   style={{
                     padding: "18px 0",
-                    borderBottom: i < 4 ? "1px solid #E4EBE4" : "none",
+                    borderBottom: i < 4 ? `1px solid ${brand.border}` : "none",
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
@@ -1141,7 +1198,7 @@ export default function FangornWebsite() {
                       fontFamily: "'DM Sans', sans-serif",
                       fontSize: 14,
                       fontWeight: 500,
-                      color: "#1B3A2D",
+                      color: brand.forest,
                     }}
                   >
                     {item.label}
@@ -1150,7 +1207,7 @@ export default function FangornWebsite() {
                     style={{
                       fontFamily: "'JetBrains Mono', monospace",
                       fontSize: 11,
-                      color: "#2D5A3F",
+                      color: brand.moss,
                     }}
                   >
                     {item.detail}
@@ -1165,21 +1222,37 @@ export default function FangornWebsite() {
       <footer
         style={{
           padding: "40px 48px",
-          background: "#1B3A2D",
+          background: brand.forest,
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
+          flexWrap: "wrap",
+          gap: 24,
         }}
       >
-        <span
-          style={{
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 11,
-            color: "rgba(255,255,255,0.5)",
-          }}
-        >
-          © 2026 Fangorn Group Limited
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+          <img
+            src={fullLogo}
+            alt="Fangorn Group"
+            style={{
+              height: 32,
+              width: "auto",
+              maxWidth: 200,
+              objectFit: "contain",
+              filter: "brightness(0) invert(1)",
+              opacity: 0.92,
+            }}
+          />
+          <span
+            style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 11,
+              color: "rgba(255,255,255,0.55)",
+            }}
+          >
+            © 2026 Fangorn Group Limited
+          </span>
+        </div>
         <span
           style={{
             fontFamily: "'JetBrains Mono', monospace",
