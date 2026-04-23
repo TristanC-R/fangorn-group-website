@@ -323,6 +323,33 @@ export default function FangornWebsite() {
 
         .nav-brand img { display: block; }
 
+        .contact-expertise-card {
+          min-width: 0;
+        }
+        .contact-expertise-row {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+          column-gap: 20px;
+          row-gap: 6px;
+          align-items: start;
+        }
+        .contact-expertise-label {
+          line-height: 1.35;
+        }
+        .contact-expertise-detail {
+          min-width: 0;
+          text-align: right;
+          line-height: 1.5;
+          overflow-wrap: anywhere;
+        }
+        @media (max-width: 900px) {
+          .contact-expertise-row {
+            grid-template-columns: 1fr;
+            row-gap: 4px;
+          }
+          .contact-expertise-detail { text-align: left; }
+        }
+
         @media (max-width: 768px) {
           .service-grid { grid-template-columns: 1fr !important; }
           .project-grid { grid-template-columns: 1fr !important; }
@@ -1110,12 +1137,12 @@ export default function FangornWebsite() {
             className="two-col"
             style={{
               display: "grid",
-              gridTemplateColumns: "1fr 1fr",
+              gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
               gap: 80,
               alignItems: "center",
             }}
           >
-            <div>
+            <div style={{ minWidth: 0 }}>
               <span
                 style={{
                   fontFamily: "'JetBrains Mono', monospace",
@@ -1164,10 +1191,12 @@ export default function FangornWebsite() {
             </div>
 
             <div
+              className="contact-expertise-card"
               style={{
                 padding: 48,
                 border: `1px solid ${brand.border}`,
                 background: brand.bgSection,
+                minWidth: 0,
               }}
             >
               {[
@@ -1185,15 +1214,14 @@ export default function FangornWebsite() {
               ].map((item, i) => (
                 <div
                   key={item.label}
+                  className="contact-expertise-row"
                   style={{
-                    padding: "18px 0",
+                    padding: "16px 0",
                     borderBottom: i < 4 ? `1px solid ${brand.border}` : "none",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
                   }}
                 >
                   <span
+                    className="contact-expertise-label"
                     style={{
                       fontFamily: "'DM Sans', sans-serif",
                       fontSize: 14,
@@ -1204,6 +1232,7 @@ export default function FangornWebsite() {
                     {item.label}
                   </span>
                   <span
+                    className="contact-expertise-detail"
                     style={{
                       fontFamily: "'JetBrains Mono', monospace",
                       fontSize: 11,
