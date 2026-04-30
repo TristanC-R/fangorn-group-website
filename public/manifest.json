@@ -1,0 +1,19 @@
+{
+  "name": "Tilth — Farm Management",
+  "short_name": "Tilth",
+  "description": "The only software your farm needs. Fields, livestock, records, finance, compliance & more.",
+  "start_url": "/tilth",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#104E3F",
+  "orientation": "any",
+  "categories": ["business", "productivity"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

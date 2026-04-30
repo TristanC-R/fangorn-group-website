@@ -1,0 +1,5 @@
+supabase
+docling
+openai
+neo4j
+python-dotenv
