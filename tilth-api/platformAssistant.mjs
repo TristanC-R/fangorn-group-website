@@ -17,6 +17,20 @@ const ASSISTANT_TOOL_RESULT_CHARS = Number(process.env.PLATFORM_ASSISTANT_TOOL_R
 const OPENAI_CHAT_TIMEOUT_MS = Number(process.env.PLATFORM_ASSISTANT_OPENAI_TIMEOUT_MS || 60_000);
 const OPENAI_CHAT_RETRIES = Number(process.env.PLATFORM_ASSISTANT_OPENAI_RETRIES || 1);
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const SPECTRAL_INDEX_FIELDS = [
+  ["ndvi", "NDVI", "ndvi_mean"],
+  ["evi", "EVI", "evi_mean"],
+  ["ndwi", "NDWI", "ndwi_mean"],
+  ["ndmi", "NDMI", "ndmi_mean"],
+  ["ndre", "NDRE", "ndre_mean"],
+  ["savi", "SAVI", "savi_mean"],
+  ["nbr", "NBR", "nbr_mean"],
+];
+
 const APP_NAMESPACES = [
   "records",
   "custom_products",
@@ -629,12 +643,12 @@ function inferAssistantScope(message, mode = "chat", reportType = null) {
   if (mode === "report") {
     if (/finance|invoice|receipt|bill|payment|owe|owed|cost|sale|purchase/.test(text)) return "finance";
     if (/compliance|audit|certificate|red\s*tractor|organic|spray|nptc|scheme|sfi|defra|rpa/.test(text)) return "compliance";
-    if (/satellite|sentinel|ndvi|sar|evi|ndmi|ndwi|moisture|vegetation|historic|history|trend/.test(text)) return "fields_satellite";
+    if (/satellite|sentinel|ndvi|sar|evi|ndmi|ndwi|ndre|savi|nbr|moisture|vegetation|historic|history|trend/.test(text)) return "fields_satellite";
     return "whole_farm";
   }
   if (/document|documents|file|files|pdf|invoice|receipt|bill|statement|certificate|contract|letter|email|report|uploaded|vault/.test(text)) return "documents";
   if (/finance|payment|owe|owed|cost|spend|spent|sale|sold|purchase|bought|market|price|xero/.test(text)) return "finance";
-  if (/satellite|sentinel|ndvi|sar|evi|ndmi|ndwi|moisture|vegetation|historic|history|trend|performing|performance|field|crop|wms|layer|map|imagery/.test(text)) return "fields_satellite";
+  if (/satellite|sentinel|ndvi|sar|evi|ndmi|ndwi|ndre|savi|nbr|moisture|vegetation|historic|history|trend|performing|performance|field|crop|wms|layer|map|imagery/.test(text)) return "fields_satellite";
   if (/compliance|audit|red\s*tractor|organic|spray test|nptc|scheme|sfi|defra|rpa|inspection/.test(text)) return "compliance";
   if (/task|operation|record|spray|planting|drill|harvest|stock|inventory|livestock|medicine|movement|rotation|weather/.test(text)) return "operations";
   return "whole_farm";
@@ -648,7 +662,7 @@ function normaliseScope(scope, message, mode = "chat", reportType = null) {
 function contextProfile(scope, message, mode = "chat") {
   const text = String(message || "").toLowerCase();
   const explicitDocumentIntent = /document|documents|file|files|pdf|invoice|receipt|bill|statement|certificate|contract|letter|email|report|uploaded|vault/.test(text);
-  const explicitSatelliteIntent = /satellite|sentinel|ndvi|sar|evi|ndmi|ndwi|moisture|vegetation|historic|history|trend|performing|performance|field|crop|wms|layer|imagery/.test(text);
+  const explicitSatelliteIntent = /satellite|sentinel|ndvi|sar|evi|ndmi|ndwi|ndre|savi|nbr|moisture|vegetation|historic|history|trend|performing|performance|field|crop|wms|layer|imagery/.test(text);
   if (mode === "report" || scope === "whole_farm") {
     return {
       namespaces: APP_NAMESPACES,
@@ -1002,6 +1016,37 @@ function summariseTrend(rows, valueKey, dateKey = "scene_datetime") {
   };
 }
 
+function buildSpectralSummary(rows) {
+  return Object.fromEntries(SPECTRAL_INDEX_FIELDS.map(([id, label, key]) => {
+    const trend = summariseTrend(rows, key);
+    return [id, {
+      label,
+      key,
+      trend,
+      latestValue: trend?.latestValue ?? null,
+      average: trend?.average ?? null,
+      direction: trend?.direction || "unknown",
+      change: trend?.change ?? null,
+      observations: trend?.validObservations || 0,
+    }];
+  }));
+}
+
+function buildSpectralRecentPoints(rows, limit = 12) {
+  return (rows || [])
+    .filter((row) => row?.scene_datetime)
+    .slice()
+    .sort((a, b) => new Date(a.scene_datetime).getTime() - new Date(b.scene_datetime).getTime())
+    .slice(-limit)
+    .map((row) => ({
+      date: String(row.scene_datetime || "").slice(0, 10),
+      status: row.status || null,
+      cloudPct: roundMetric(row.scene_cloud_pct, 1),
+      validPixels: Number.isFinite(Number(row.valid_pixel_count)) ? Number(row.valid_pixel_count) : null,
+      indices: Object.fromEntries(SPECTRAL_INDEX_FIELDS.map(([id, , key]) => [id, roundMetric(row[key])])),
+    }));
+}
+
 function buildSatellitePerformance(fields, ndviRows, sarRows) {
   const now = Date.now();
   const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
@@ -1026,6 +1071,8 @@ function buildSatellitePerformance(fields, ndviRows, sarRows) {
         latestCloudPct: roundMetric(latestNdvi?.scene_cloud_pct, 1),
         trend: summariseTrend(recentNdviRows, "ndvi_mean"),
       },
+      spectralIndices: buildSpectralSummary(recentNdviRows),
+      spectralRecentPoints: buildSpectralRecentPoints(recentNdviRows),
       sar: {
         observations: recentSarRows.length,
         validObservations: recentSarRows.filter((row) => row.status === "ok" && Number(row.valid_pixel_count || 0) > 0).length,
@@ -1074,6 +1121,12 @@ function buildFieldAdvice(fields, performanceByField, weather) {
     if (performance.ndvi?.trend) {
       evidence.push(`NDVI ${performance.ndvi.trend.direction}: latest ${performance.ndvi.trend.latestValue}, average ${performance.ndvi.trend.average}, ${performance.ndvi.trend.validObservations} valid observations`);
     }
+    for (const [id, summary] of Object.entries(performance.spectralIndices || {})) {
+      if (id === "ndvi" || !summary?.trend) continue;
+      if (summary.observations > 0) {
+        evidence.push(`${summary.label} ${summary.direction}: latest ${summary.latestValue}, average ${summary.average}, change ${summary.change}`);
+      }
+    }
     if (performance.ndvi?.noDataObservations) {
       evidence.push(`${performance.ndvi.noDataObservations} optical no-data/cloud observations in the last ${performance.windowDays} days`);
     }
@@ -1090,6 +1143,23 @@ function buildFieldAdvice(fields, performanceByField, weather) {
       recommendations.push("Keep inputs steady and monitor for lodging/disease rather than making a blanket intervention, because the optical vegetation trend is improving.");
     } else if (performance.ndvi?.trend?.direction === "stable") {
       recommendations.push("Use a targeted field walk rather than a broad intervention: the vegetation signal is broadly stable, so look for localised patches before spending on inputs.");
+    }
+
+    const spectral = performance.spectralIndices || {};
+    if (spectral.ndmi?.latestValue != null && spectral.ndmi.latestValue < -0.05) {
+      recommendations.push("Ground-check soil moisture and drought-prone patches: NDMI is low, so water stress may be part of the field's performance story.");
+    }
+    if (spectral.ndre?.latestValue != null && (spectral.ndre.latestValue < 0.18 || spectral.ndre.direction === "declining")) {
+      recommendations.push("Check nitrogen/chlorophyll status and disease pressure: NDRE is weak or declining, which can show stress before NDVI fully reacts.");
+    }
+    if (spectral.savi?.latestValue != null && spectral.savi.latestValue < 0.22) {
+      recommendations.push("Inspect establishment and canopy evenness: SAVI is low, which is useful where bare soil is still influencing the optical signal.");
+    }
+    if (spectral.evi?.direction === "declining") {
+      recommendations.push("Review dense-canopy vigour: EVI is declining, so check for lodging, disease, nutrient stress or early senescence.");
+    }
+    if (spectral.nbr?.latestValue != null && spectral.nbr.latestValue < 0.05) {
+      recommendations.push("Compare NBR with recent operations or residue status before treating it as crop stress; low NBR can indicate exposed soil, residue, scorch or disturbance context.");
     }
 
     if (performance.ndvi?.validObservations === 0 && performance.ndvi?.noDataObservations > 0) {
@@ -1875,6 +1945,40 @@ function cleanString(value, max = 240) {
   return value == null ? "" : String(value).trim().slice(0, max);
 }
 
+function readableAssistantText(value, max = 12_000) {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim().slice(0, max);
+  if (typeof value === "number" || typeof value === "boolean") return String(value).slice(0, max);
+  if (Array.isArray(value)) {
+    return value.map((item) => readableAssistantText(item, max)).filter(Boolean).join("\n").slice(0, max);
+  }
+  if (typeof value === "object") {
+    const nested = value.answer ?? value.content ?? value.report ?? value.summary ?? value.text ?? value.message;
+    if (nested != null) return readableAssistantText(nested, max);
+    return Object.entries(value)
+      .map(([key, entry]) => {
+        const label = key
+          .replace(/[_-]+/g, " ")
+          .replace(/\b\w/g, (char) => char.toUpperCase());
+        const body = readableAssistantText(entry, max);
+        return body ? `${label}\n${body}` : "";
+      })
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, max);
+  }
+  return String(value).trim().slice(0, max);
+}
+
+function htmlEscape(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function cleanNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
@@ -2117,14 +2221,43 @@ function cleanMeetingSubject(value) {
     .replace(/[?.!,]+$/, "");
 }
 
-function deterministicSuggestedActions(message) {
+function recentConversationContext(history) {
+  const turns = (history || [])
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .slice(-6)
+    .map((m) => `${m.role}: ${m.content || ""}`);
+  const joined = turns.join("\n");
+  const fieldMatches = [...joined.matchAll(/\bInterpret crop health for\s+([A-Z][A-Za-z0-9 .'-]{1,80}(?:\s+Field)?)/gi)];
+  const fieldName = fieldMatches.length
+    ? cleanString(fieldMatches.at(-1)?.[1], 120).replace(/[.,:;!?]+$/, "").trim()
+    : "";
+  return {
+    recentFieldName: fieldName,
+    summary: joined.slice(-3000),
+  };
+}
+
+function inferFieldNameFromMessage(message, context = {}) {
   const text = String(message || "");
-  if (!/\b(calendar|remind|reminder|meet|meeting|appointment|call)\b/i.test(text)) return [];
+  const explicit = /\b(?:for|in|on)\s+([A-Z][A-Za-z0-9 .'-]{1,80}?)(?:\s+Field)?(?:\s+(?:tomorrow|today|at|on|please|$)|[.,!?]|$)/.exec(text);
+  if (explicit?.[1]) return cleanString(explicit[1], 120).replace(/\s+Field$/i, " Field");
+  return context.recentFieldName || "";
+}
+
+function deterministicSuggestedActions(message, context = {}) {
+  const text = String(message || "");
+  const isCalendarLike = /\b(calendar|remind|reminder|meet|meeting|appointment|call)\b/i.test(text);
+  const isFieldWalkover = /\b(schedule|schedual|book|add|create|set|put)\b/i.test(text)
+    && /\b(walk\s*over|walkover|walk|scout|check|inspect|field visit)\b/i.test(text);
+  if (!isCalendarLike && !isFieldWalkover) return [];
   const dueDate = parseNaturalDate(text);
   if (!dueDate) return [];
   const time = parseNaturalTime(text);
   const subject = parseMeetingSubject(text);
-  const title = subject ? `Meeting with ${subject}` : "Calendar reminder";
+  const fieldName = inferFieldNameFromMessage(text, context);
+  const title = isFieldWalkover
+    ? `Walk over ${fieldName || "field"}`
+    : subject ? `Meeting with ${subject}` : "Calendar reminder";
   return [{
     action_type: "calendar_reminder",
     title,
@@ -2136,7 +2269,7 @@ function deterministicSuggestedActions(message) {
       title,
       dueDate,
       reminderDays: 0,
-      category: "meeting",
+      category: isFieldWalkover ? "field" : "meeting",
       priority: "medium",
       notes: time ? `Time: ${time}. Original request: ${text}` : `Original request: ${text}`,
       sourceKey: `assistant:calendar:${dueDate}:${normaliseSearchText(title).slice(0, 80)}`,
@@ -2147,7 +2280,7 @@ function deterministicSuggestedActions(message) {
 
 function deterministicFallbackResponse({ farmId, userId, message, originId, context = null, reason = "" }) {
   const suggestedActions = validateSuggestedActions(
-    deterministicSuggestedActions(message),
+    deterministicSuggestedActions(message, context?.conversationContext || {}),
     farmId,
     userId,
     originId
@@ -2211,6 +2344,14 @@ function assistantToolSystemPrompt({ mode, reportType, scope }) {
     "Use field_observation for field notes, scouting notes, sightings, weeds, pests, disease, black grass, waterlogging, lodging or 'I noticed...' requests.",
     "Use spray_record only when the user says a spray/application has already been done and gives or implies an application record. Do not use spray_record for possible future spraying or recommendations.",
     `Suggested action JSON examples. Use these canonical payload keys and populate all fields supported by evidence:\n${actionExamplesForPrompt()}`,
+    [
+      "Final response contract: whenever you are asked to return JSON, return exactly this top-level shape:",
+      "{\"answer\":\"Readable plain-text answer for the user. This MUST be a string, never an object or array.\",\"suggested_actions\":[],\"source_ids\":[]}",
+      "Put report sections, headings, bullet points and interpretation inside the answer string using newline characters.",
+      "Only suggested_actions may contain structured objects. Never put current_read, next_steps, findings, report, sections or similar objects inside answer.",
+      "Example report JSON:",
+      "{\"answer\":\"Current read\\nThe field is holding a moderate canopy signal.\\n\\nWhat the indices are saying\\nNDVI indicates canopy cover, NDMI suggests canopy moisture is adequate, and NDRE does not show a strong chlorophyll warning.\\n\\nSuggested checks/actions\\nWalk the weaker patches and compare with recent spray, fertiliser and rainfall history.\",\"suggested_actions\":[],\"source_ids\":[\"field:abc\"]}",
+    ].join(" "),
     "Final answers must be concise, practical and source-cited where sources exist.",
     `Mode: ${mode}. Report type: ${reportType || "none"}. Requested scope: ${scope}.`,
     `Allowed suggested action_type values: ${[...ACTION_TYPES].join(", ")}.`,
@@ -2243,7 +2384,7 @@ async function preloadAssistantToolEvidence(ctx, message) {
     const supplier = supplierMatch?.[1]?.replace(/\b(a|an|the|awhile|while|ago|and|have|not|paid|it|how|much|do|i|need|to|them)\b/gi, " ").replace(/\s+/g, " ").trim() || message;
     results.push(await toolFindInvoiceOrPayable(ctx, { supplier, query: message, includePaid: false, limit: 12 }));
   }
-  if (/field|ndvi|sar|satellite|perform|crop|soil|suggest|next step|what should/i.test(message)) {
+  if (/field|ndvi|sar|evi|ndwi|ndmi|ndre|savi|nbr|satellite|perform|crop|soil|suggest|next step|what should/i.test(message)) {
     const fields = await loadFieldRows(ctx.admin, ctx.farmId);
     const matched = resolveFields(fields, { query: message });
     if (matched.length) {
@@ -2260,10 +2401,10 @@ function stringifyToolResult(result) {
 function parseFinalAssistantPayload(text) {
   const parsed = parseAssistantJson(text);
   if (!parsed || typeof parsed !== "object") {
-    return { answer: text || "", suggested_actions: [], source_ids: [] };
+    return { answer: readableAssistantText(text || "", 12_000), suggested_actions: [], source_ids: [] };
   }
   return {
-    answer: cleanString(parsed.answer || "", 12_000),
+    answer: readableAssistantText(parsed.answer || "", 12_000),
     suggested_actions: Array.isArray(parsed.suggested_actions) ? parsed.suggested_actions : [],
     source_ids: Array.isArray(parsed.source_ids) ? parsed.source_ids.map(String) : [],
   };
@@ -2271,8 +2412,10 @@ function parseFinalAssistantPayload(text) {
 
 function isActionOnlyRequest(message) {
   const text = String(message || "").toLowerCase();
-  return /\b(calendar|remind|reminder|diary|appointment)\b/.test(text)
-    && /\b(add|put|create|set|schedule|book|make)\b/.test(text);
+  const createVerb = /\b(add|put|create|set|schedule|schedual|book|make)\b/.test(text);
+  const calendarTarget = /\b(calendar|remind|reminder|diary|appointment)\b/.test(text);
+  const fieldWalkTarget = /\b(walk\s*over|walkover|walk|scout|check|inspect|field visit)\b/.test(text);
+  return createVerb && (calendarTarget || fieldWalkTarget);
 }
 
 function isMetaQuestion(message) {
@@ -2286,6 +2429,7 @@ async function createAssistantResponse({ farmId, userId, message, scope = "whole
   const t0 = Date.now();
   const log = (label) => console.log(`  [assistant] ${label} +${Date.now() - t0}ms`);
   const retrievalText = retrievalTextFromHistory(message, history);
+  const conversationContext = recentConversationContext(history);
   const effectiveScope = normaliseScope(scope, retrievalText || message, mode, reportType);
   log(`scope=${effectiveScope}`);
 
@@ -2294,24 +2438,17 @@ async function createAssistantResponse({ farmId, userId, message, scope = "whole
   }
 
   // --- Fast path: action-only requests (calendar, reminders) ---
-  if (mode === "chat" && canEdit && isActionOnlyRequest(retrievalText || message)) {
-    const actions = deterministicSuggestedActions(message);
+  if (mode === "chat" && canEdit && isActionOnlyRequest(message)) {
+    const actions = deterministicSuggestedActions(message, conversationContext);
     if (actions.length) {
       log("fast-path: deterministic action");
       const validated = validateSuggestedActions(actions, farmId, userId, originId);
-      // Single lightweight OpenAI call for a natural-language confirmation message
-      const confirmMsg = await chatCompletionMessage([
-        { role: "system", content: "You are Tilth's farm assistant. The user asked for a calendar/reminder action. A suggested action has been created for them to confirm. Write a brief friendly confirmation (1-2 sentences). Do not use markdown." },
-        { role: "user", content: message },
-        { role: "system", content: `Drafted action: ${JSON.stringify(actions[0])}` },
-      ], { temperature: 0.3 });
-      log("fast-path: OpenAI confirm done");
-      const answer = confirmMsg?.message?.content || `I've drafted that for you — please confirm the action below.`;
+      const answer = `I've drafted that for you — please confirm the ${validated[0]?.title || "calendar reminder"} below.`;
       return {
         answer,
         suggestedActions: validated,
         sources: [],
-        context: { scope: effectiveScope, requestedScope: scope, toolLog: [], fastPath: "deterministic_action" },
+        context: { scope: effectiveScope, requestedScope: scope, toolLog: [], fastPath: "deterministic_action", conversationContext },
         toolLog: [],
       };
     }
@@ -2324,7 +2461,7 @@ async function createAssistantResponse({ farmId, userId, message, scope = "whole
       { role: "system", content: assistantToolSystemPrompt({ mode, reportType, scope: effectiveScope }) },
       ...historyForPrompt(history),
       { role: "user", content: message },
-      { role: "system", content: "Answer directly. Do not call tools. Return strict JSON with keys: answer, suggested_actions, source_ids. Do not include markdown fences." },
+      { role: "system", content: "Answer directly. Do not call tools. Return strict JSON with keys: answer, suggested_actions, source_ids. answer MUST be a string. Do not include markdown fences." },
     ], { jsonMode: true, temperature: 0.2 });
     log("fast-path: OpenAI done");
     const parsed = parseFinalAssistantPayload(meta?.message?.content || "");
@@ -2351,7 +2488,15 @@ async function createAssistantResponse({ farmId, userId, message, scope = "whole
     const messages = [
       { role: "system", content: assistantToolSystemPrompt({ mode, reportType, scope: effectiveScope }) },
       ...historyForPrompt(history),
-      { role: "user", content: `${mode === "report" ? `Report type: ${reportType || "farm_operations"}\n` : ""}${message}` },
+      {
+        role: "system",
+        content: [
+          "Conversation context is background only. Use it to resolve references such as field names, dates or what 'it' refers to.",
+          "The current user request below is the instruction to answer or act on now. Do not repeat an earlier report unless the current request asks for it.",
+          conversationContext.recentFieldName ? `Likely referenced field from context: ${conversationContext.recentFieldName}.` : "",
+        ].filter(Boolean).join(" "),
+      },
+      { role: "user", content: `${mode === "report" ? `Report type: ${reportType || "farm_operations"}\n` : ""}Current user request:\n${message}` },
     ];
     const preloadedEvidence = await preloadAssistantToolEvidence(toolCtx, retrievalText || message);
     log(`preload done (${preloadedEvidence.length} evidence items)`);
@@ -2368,7 +2513,9 @@ async function createAssistantResponse({ farmId, userId, message, scope = "whole
         content: [
           "Use the validated Tilth evidence above to answer now.",
           "Return strict JSON only with keys: answer, suggested_actions, source_ids.",
-          "Keep the answer practical and focused on recent field performance, NDVI/SAR/weather evidence, missing data, and next actions.",
+          "answer MUST be a readable string, never an object or array. Put all report sections inside that string.",
+          "suggested_actions must be [] unless the user explicitly asked to create a task, record, reminder or other change.",
+          "Keep the answer practical and focused on recent field performance, full spectral time-series evidence (NDVI, EVI, NDWI, NDMI, NDRE, SAVI, NBR), SAR/weather evidence, missing data, and next actions.",
           "Do not include markdown fences.",
         ].join(" "),
       });
@@ -2435,6 +2582,8 @@ async function createAssistantResponse({ farmId, userId, message, scope = "whole
       role: "system",
       content: [
         "Return strict JSON only with keys: answer, suggested_actions, source_ids.",
+        "answer MUST be a readable string, never an object or array. Put all report sections inside that string.",
+        "suggested_actions must be [] unless the user explicitly asked to create a task, record, reminder or other change.",
         "source_ids must be ids from tool results in this turn.",
         "If a requested value was not found, say which tool/source was checked and what was missing.",
         "Do not include markdown fences.",
@@ -2524,7 +2673,7 @@ async function chat(req, res, json) {
     console.log(`  [chat] access denied for user=${auth.userId} farm=${farmId}`);
     return json(res, 403, { error: "farm not found or access denied" });
   }
-  const canEdit = await userCanEditFarm(auth.userId, farmId);
+  const canEdit = body.allowActions === false ? false : await userCanEditFarm(auth.userId, farmId);
   const admin = adminClient();
   const sessionId = await ensureSession(admin, farmId, auth.userId, message, body.chatSessionId || null, scope);
   const history = await loadSessionHistory(admin, farmId, sessionId);
@@ -2625,6 +2774,246 @@ async function generateReport(req, res, json) {
   return json(res, 200, { report: saved.data, answer, sources: result.sources, suggestedActions: persistedActions, warnings: actionWarning ? [actionWarning] : [] });
 }
 
+function interpretiveReportPrompt({ farmName, cadence, range, sections, evidence }) {
+  const sectionBriefs = (sections || []).map((section) => ({
+    key: section.key,
+    title: section.title,
+    evidence: section.evidence ?? evidence?.sections?.[section.key] ?? null,
+  }));
+  return [
+    {
+      role: "system",
+      content: [
+        "You create useful farm management interpretations from factual Tilth report data.",
+        "Return strict JSON only with keys: executive_summary, section_interpretations.",
+        "executive_summary must be a readable plain-text string and should be the main management narrative, not a short abstract.",
+        "Write the executive_summary as a consolidated interpretation of all supplied sections: bring together farm operations, weather and workability, finance, markets, inventory/store, observations, livestock, compliance, satellite signals, rankings, recommendations, field registry, schemes and topography where present.",
+        "The executive_summary should normally be 6-10 substantial paragraphs for a real weekly/monthly/quarterly report, unless there is very little data.",
+        "Use the executive_summary to make practical observations, explain likely causes, identify priorities, and suggest next checks or management actions. Clearly separate evidence-backed findings from uncertainty.",
+        "section_interpretations must be an object keyed by the supplied section keys, and every value must be a readable plain-text string.",
+        "Do not invent measurements or claim unsupported facts, but you may make reasonable agronomic observations, risk calls and suggestions when they are clearly grounded in the supplied evidence.",
+        "Use all relevant operational and business context where supplied: tasks, field records, weather, finance, markets, store/inventory, observations, livestock, compliance/audit, schemes and topography. Use spectral indices where supplied: NDVI, EVI, NDWI, NDMI, NDRE, SAVI and NBR.",
+        "Keep each section interpretation short: normally 2-4 sentences.",
+      ].join(" "),
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        report: {
+          farmName,
+          cadence,
+          range,
+          generatedAt: new Date().toISOString(),
+        },
+        sections: sectionBriefs,
+      }),
+    },
+  ];
+}
+
+function parseInterpretivePayload(text, sections) {
+  const parsed = parseAssistantJson(text);
+  const sectionKeys = new Set((sections || []).map((section) => String(section.key)));
+  const rawInterpretations = parsed && typeof parsed === "object" && parsed.section_interpretations && typeof parsed.section_interpretations === "object"
+    ? parsed.section_interpretations
+    : {};
+  const section_interpretations = {};
+  for (const key of sectionKeys) {
+    const value = rawInterpretations[key];
+    section_interpretations[key] = readableAssistantText(value || "", 4000);
+  }
+  return {
+    executive_summary: readableAssistantText(parsed?.executive_summary || parsed?.summary || "", 12_000),
+    section_interpretations,
+  };
+}
+
+function buildInterpretationBlock(text, label = "AI interpretation") {
+  const body = readableAssistantText(text, label === "AI executive summary" ? 12_000 : 5000);
+  if (!body) return "";
+  return `<div class="ai-interpretation"><div class="ai-label">${htmlEscape(label)}</div><p>${htmlEscape(body).replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br/>")}</p></div>`;
+}
+
+function injectInterpretationsIntoHtml(factualHtml, sections, interpretations, executiveSummary) {
+  let html = String(factualHtml || "");
+  if (!html) return "";
+  const summaryBlock = buildInterpretationBlock(executiveSummary, "AI executive summary");
+  const style = `
+<style>
+  .ai-interpretation{border:1px solid #D5E5D7;border-left:4px solid #649A5C;background:#F5F8F4;border-radius:3px;padding:12px 14px;margin:12px 0 18px;color:#3A4F47}
+  .ai-interpretation .ai-label{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#104E3F;margin-bottom:6px}
+  .ai-interpretation p{margin:0 0 8px;font-size:11.5px;line-height:1.6}
+  .ai-interpretation p:last-child{margin-bottom:0}
+</style>`;
+  html = html.replace("</head>", `${style}\n</head>`);
+  if (summaryBlock) {
+    html = html.replace("</header>", `</header>\n${summaryBlock}`);
+  }
+  for (const section of sections || []) {
+    const block = buildInterpretationBlock(interpretations?.[section.key], `AI interpretation: ${section.title || section.key}`);
+    if (!block) continue;
+    const marker = `data-report-section="${section.key}"`;
+    const markerIndex = html.indexOf(marker);
+    if (markerIndex >= 0) {
+      const endIndex = html.indexOf("</section>", markerIndex);
+      if (endIndex >= 0) {
+        html = `${html.slice(0, endIndex)}${block}${html.slice(endIndex)}`;
+        continue;
+      }
+    }
+  }
+  return html;
+}
+
+async function completeInterpretiveReport({ reportId, farmId, farmName, cadence, range, sections, evidence, factualHtml }) {
+  const admin = adminClient();
+  try {
+    if (!OPENAI_API_KEY) {
+      throw new Error("OpenAI is not configured for interpretive reports.");
+    }
+    const result = await chatCompletionMessage(interpretiveReportPrompt({ farmName, cadence, range, sections, evidence }), {
+      temperature: 0.25,
+      jsonMode: true,
+    });
+    const ai = parseInterpretivePayload(result?.message?.content || "", sections);
+    const content = injectInterpretationsIntoHtml(factualHtml, sections, ai.section_interpretations, ai.executive_summary);
+    const completedAt = new Date().toISOString();
+    const updated = await admin
+      .from("assistant_generated_reports")
+      .update({
+        content,
+        sources: [],
+        metadata: {
+          kind: "interpretive_report",
+          status: "completed",
+          cadence,
+          range,
+          vaultVisible: true,
+          completedAt,
+          factualEvidence: evidence || null,
+          executiveSummary: ai.executive_summary,
+          sectionKeys: (sections || []).map((section) => section.key),
+        },
+      })
+      .eq("id", reportId)
+      .eq("farm_id", farmId)
+      .select("*")
+      .single();
+    if (updated.error) throw new Error(updated.error.message);
+  } catch (err) {
+    console.error(`Interpretive report ${reportId} failed:`, err);
+    await admin
+      .from("assistant_generated_reports")
+      .update({
+        content: `Interpretive report failed: ${err?.message || "unknown error"}`,
+        metadata: {
+          kind: "interpretive_report",
+          status: "failed",
+          cadence,
+          range,
+          vaultVisible: true,
+          failedAt: new Date().toISOString(),
+          error: err?.message || "unknown error",
+        },
+      })
+      .eq("id", reportId)
+      .eq("farm_id", farmId);
+  }
+}
+
+async function startInterpretiveReport(req, res, json) {
+  const auth = await authenticatedUser(req);
+  if (auth.error) return json(res, auth.error.status, auth.error.body);
+  const body = await readJsonBody(req);
+  const farmId = String(body.farmId || "");
+  if (!(await userCanReadFarm(auth.userId, farmId))) {
+    return json(res, 403, { error: "farm not found or access denied" });
+  }
+  const cadence = String(body.cadence || "weekly");
+  const title = String(body.title || `${cadence} interpretive report`);
+  const sections = Array.isArray(body.sections) ? body.sections.slice(0, 12) : [];
+  const factualHtml = String(body.factualHtml || "");
+  if (!sections.length || !factualHtml) {
+    return json(res, 400, { error: "sections and factualHtml are required" });
+  }
+  const range = body.range && typeof body.range === "object" ? body.range : {};
+  const evidence = body.evidence && typeof body.evidence === "object" ? body.evidence : {};
+  const prompt = String(body.prompt || "Generate an interpretive farm report.");
+  const admin = adminClient();
+  const inserted = await admin
+    .from("assistant_generated_reports")
+    .insert({
+      farm_id: farmId,
+      user_id: auth.userId,
+      report_type: `interpretive_${cadence}`,
+      title,
+      prompt,
+      content: "Processing interpretive report...",
+      sources: [],
+      suggested_actions: [],
+      metadata: {
+        kind: "interpretive_report",
+        status: "processing",
+        cadence,
+        range,
+        vaultVisible: true,
+        startedAt: new Date().toISOString(),
+        sectionKeys: sections.map((section) => section.key),
+      },
+    })
+    .select("*")
+    .single();
+  if (inserted.error) throw new Error(inserted.error.message);
+  setTimeout(() => {
+    completeInterpretiveReport({
+      reportId: inserted.data.id,
+      farmId,
+      farmName: String(body.farmName || "Unnamed farm"),
+      cadence,
+      range,
+      sections,
+      evidence,
+      factualHtml,
+    });
+  }, 0);
+  return json(res, 202, { reportId: inserted.data.id, status: "processing", report: inserted.data });
+}
+
+async function listInterpretiveReports(req, res, json, url) {
+  const auth = await authenticatedUser(req);
+  if (auth.error) return json(res, auth.error.status, auth.error.body);
+  const farmId = String(url.searchParams.get("farmId") || "");
+  if (!(await userCanReadFarm(auth.userId, farmId))) {
+    return json(res, 403, { error: "farm not found or access denied" });
+  }
+  const result = await adminClient()
+    .from("assistant_generated_reports")
+    .select("*")
+    .eq("farm_id", farmId)
+    .eq("metadata->>kind", "interpretive_report")
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (result.error) throw new Error(result.error.message);
+  return json(res, 200, { reports: result.data || [] });
+}
+
+async function getInterpretiveReport(req, res, json, url, reportId) {
+  const auth = await authenticatedUser(req);
+  if (auth.error) return json(res, auth.error.status, auth.error.body);
+  const farmId = String(url.searchParams.get("farmId") || "");
+  if (!(await userCanReadFarm(auth.userId, farmId))) {
+    return json(res, 403, { error: "farm not found or access denied" });
+  }
+  const result = await adminClient()
+    .from("assistant_generated_reports")
+    .select("*")
+    .eq("id", reportId)
+    .eq("farm_id", farmId)
+    .single();
+  if (result.error) throw new Error(result.error.message);
+  return json(res, 200, { report: result.data });
+}
+
 async function contextStatus(req, res, json, url) {
   const auth = await authenticatedUser(req);
   if (auth.error) return json(res, auth.error.status, auth.error.body);
@@ -2693,6 +3082,21 @@ export async function handlePlatformAssistantRoute(req, res, url, json) {
       console.log(`${tag} start`);
       await generateReport(req, res, json);
       console.log(`${tag} done ${Date.now() - t0}ms`);
+      return true;
+    }
+    if (req.method === "POST" && pathname === "/api/platform-assistant/reports/interpretive/start") {
+      console.log(`${tag} start`);
+      await startInterpretiveReport(req, res, json);
+      console.log(`${tag} queued ${Date.now() - t0}ms`);
+      return true;
+    }
+    if (req.method === "GET" && pathname === "/api/platform-assistant/reports/interpretive") {
+      await listInterpretiveReports(req, res, json, url);
+      return true;
+    }
+    const interpretiveMatch = /^\/api\/platform-assistant\/reports\/interpretive\/([^/]+)$/.exec(pathname);
+    if (req.method === "GET" && interpretiveMatch) {
+      await getInterpretiveReport(req, res, json, url, decodeURIComponent(interpretiveMatch[1]));
       return true;
     }
     if (req.method === "POST" && pathname === "/api/platform-assistant/actions/status") {

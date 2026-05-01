@@ -103,9 +103,21 @@ async function geocodeFarmToView(farm, signal) {
 const SOIL_OPTIONS = ["Clay", "Clay loam", "Loam", "Sandy loam", "Sandy", "Silty", "Peat", "Chalk"];
 const TENURE_OPTIONS = ["Owned", "Tenanted", "Share-farmed", "Contract farmed"];
 
+function currentPasturePlanting(source = "field-attributes") {
+  return {
+    id: crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    crop: "Permanent pasture",
+    plantingDate: `${new Date().getFullYear()}-01-01`,
+    notes: "Default grassland enterprise.",
+    source,
+    createdAt: new Date().toISOString(),
+  };
+}
+
 export function FieldsWorkspace({ farm, fields, onFieldsUpdated }) {
   const [selectedId, setSelectedId] = useState(fields?.[0]?.id || null);
   const [adding, setAdding] = useState(false);
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
   const [note, setNote] = useState(null);
   const [deleteBusy, setDeleteBusy] = useState(null);
   const [renameValue, setRenameValue] = useState("");
@@ -282,6 +294,7 @@ export function FieldsWorkspace({ farm, fields, onFieldsUpdated }) {
   const handleSelect = useCallback((id) => {
     if (editingId && id !== editingId) return; // avoid dropping edits
     setSelectedId(id);
+    setMobilePanelOpen(true);
   }, [editingId]);
 
   const handleDelete = async (id) => {
@@ -528,7 +541,7 @@ export function FieldsWorkspace({ farm, fields, onFieldsUpdated }) {
           }}
         >
           <div className="tilth-fields-map-column" style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, gap: 8 }}>
-            <div className="tilth-fields-map-wrap" style={{ flex: "1 1 auto", minHeight: 0 }}>
+            <div className="tilth-fields-map-wrap" style={{ flex: "1 1 auto", minHeight: 0, position: "relative" }}>
               <FieldMapThree2D
                 center={[initialView.lat, initialView.lng]}
                 zoom={initialView.zoom}
@@ -547,6 +560,31 @@ export function FieldsWorkspace({ farm, fields, onFieldsUpdated }) {
                 }}
                 height="100%"
               />
+              <button
+                type="button"
+                className="tilth-fields-mobile-menu-button"
+                onClick={() => setMobilePanelOpen(true)}
+                style={{
+                  display: "none",
+                  position: "absolute",
+                  right: 12,
+                  top: 12,
+                  zIndex: 5,
+                  border: `1px solid ${brand.border}`,
+                  borderRadius: radius.base,
+                  background: brand.white,
+                  color: brand.forest,
+                  fontFamily: fonts.mono,
+                  fontSize: 11,
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                  padding: "9px 11px",
+                  boxShadow: "0 10px 30px rgba(16,78,63,0.16)",
+                  cursor: "pointer",
+                }}
+              >
+                Fields
+              </button>
             </div>
 
             <FieldsInfoStrip
@@ -559,7 +597,7 @@ export function FieldsWorkspace({ farm, fields, onFieldsUpdated }) {
           </div>
 
           <div
-            className="tilth-fields-panel tilth-scroll"
+            className={`tilth-fields-panel tilth-scroll ${mobilePanelOpen ? "open" : ""}`}
             style={{
               minHeight: 0,
               minWidth: 0,
@@ -570,6 +608,27 @@ export function FieldsWorkspace({ farm, fields, onFieldsUpdated }) {
               paddingRight: 4,
             }}
           >
+            <button
+              type="button"
+              className="tilth-fields-panel-close"
+              onClick={() => setMobilePanelOpen(false)}
+              style={{
+                display: "none",
+                border: `1px solid ${brand.border}`,
+                borderRadius: radius.base,
+                background: brand.white,
+                color: brand.forest,
+                fontFamily: fonts.mono,
+                fontSize: 10,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                padding: "8px 10px",
+                cursor: "pointer",
+                justifyContent: "center",
+              }}
+            >
+              Close field menu
+            </button>
             <Card padding={12}>
               <div
                 style={{
@@ -677,23 +736,50 @@ export function FieldsWorkspace({ farm, fields, onFieldsUpdated }) {
         }
         @media (max-width: 700px) {
           .tilth-fields-layout {
-            display: flex !important;
-            flex-direction: column !important;
-            overflow-y: auto !important;
-            gap: 12px !important;
-            padding-bottom: 18px !important;
+            display: block !important;
+            position: relative !important;
+            overflow: hidden !important;
+            gap: 0 !important;
+            padding-bottom: 0 !important;
           }
-          .tilth-fields-map-column,
-          .tilth-fields-panel {
-            flex: 0 0 auto !important;
-            min-height: auto !important;
-            overflow: visible !important;
-            padding-right: 0 !important;
+          .tilth-fields-map-column {
+            position: absolute !important;
+            inset: 0 !important;
+            display: block !important;
           }
           .tilth-fields-map-wrap {
-            flex: 0 0 auto !important;
-            height: min(58vh, 420px) !important;
-            min-height: 300px !important;
+            height: 100% !important;
+            min-height: 0 !important;
+          }
+          .tilth-fields-mobile-menu-button {
+            display: inline-flex !important;
+          }
+          .tilth-fields-info-strip {
+            display: none !important;
+          }
+          .tilth-fields-panel {
+            position: fixed !important;
+            left: max(10px, env(safe-area-inset-left, 0px)) !important;
+            right: max(10px, env(safe-area-inset-right, 0px)) !important;
+            bottom: max(10px, env(safe-area-inset-bottom, 0px)) !important;
+            z-index: 2600 !important;
+            display: none !important;
+            max-height: min(78dvh, 680px) !important;
+            overflow-y: auto !important;
+            background: ${brand.white} !important;
+            border: 1px solid ${brand.border} !important;
+            border-radius: 16px 16px 8px 8px !important;
+            box-shadow: 0 -18px 70px rgba(14,42,36,0.24) !important;
+            padding: 12px !important;
+          }
+          .tilth-fields-panel.open {
+            display: flex !important;
+          }
+          .tilth-fields-panel-close {
+            display: inline-flex !important;
+            position: sticky !important;
+            top: 0 !important;
+            z-index: 2 !important;
           }
           .tilth-fields-registry-list {
             max-height: none !important;
@@ -724,8 +810,8 @@ export function FieldsWorkspace({ farm, fields, onFieldsUpdated }) {
         }
         @media (max-width: 430px) {
           .tilth-fields-map-wrap {
-            height: 52vh !important;
-            min-height: 280px !important;
+            height: 100% !important;
+            min-height: 0 !important;
           }
         }
       `}</style>
@@ -736,6 +822,7 @@ export function FieldsWorkspace({ farm, fields, onFieldsUpdated }) {
 function MiniStat({ label, value }) {
   return (
     <div
+      className="tilth-fields-info-strip"
       style={{
         border: `1px solid ${brand.border}`,
         background: brand.bgSection,
@@ -818,6 +905,13 @@ function DetailsPanel({
   const handleRemovePlanting = (pid) => {
     if (!window.confirm("Remove this planting record?")) return;
     tilthStore.removePlanting(farmId, selected.id, pid);
+    onPlantingsChanged();
+  };
+
+  const handleLandUseChange = (id) => {
+    onSaveAttr(selected.id, { landUse: id });
+    if (id !== "grass" || currentPlanting?.crop) return;
+    tilthStore.addPlanting(farmId, selected.id, currentPasturePlanting());
     onPlantingsChanged();
   };
 
@@ -1037,7 +1131,7 @@ function DetailsPanel({
             <FieldLabel>Land use</FieldLabel>
             <LandUsePicker
               value={selectedAttr.landUse || DEFAULT_LAND_USE}
-              onChange={(id) => onSaveAttr(selected.id, { landUse: id })}
+              onChange={handleLandUseChange}
             />
           </div>
           <div>

@@ -4,8 +4,11 @@ import { Button, Kicker, Pill } from "./primitives.jsx";
 import { FieldMapThree2D } from "../FieldMapThree2D.jsx";
 import { ringCentroid, ringAreaSqDeg } from "../geoPointInPolygon.js";
 import { scoreColor, STAGE_LABELS, FLAG_LABELS, useFarmHealth } from "../../lib/cropHealth.js";
+import { SPECTRAL_INDICES, SPECTRAL_INDEX_LIST, formatSpectralValue, spectralTone } from "../../lib/spectralIndices.js";
 import { tilthStore, useLocalValue } from "../state/localStore.js";
 import { daysSincePlanting, expectedStage } from "../../lib/cropPhenology.js";
+import { buildSpectralTileUrlFn, useFieldNdviScenes } from "../../lib/tilthSentinel.js";
+import { buildSarTileUrlFn, SAR_BAND_DEFAULTS, useFieldSarScenes } from "../../lib/tilthSar.js";
 
 function approxHectares(ring) {
   if (!Array.isArray(ring) || ring.length < 3) return 0;
@@ -21,7 +24,7 @@ function fmtHa(ha) {
 
 const SHEET_COLLAPSED = 80;
 const SHEET_PEEK = 240;
-const SHEET_FULL = "70vh";
+const SHEET_FULL = "70dvh";
 const WIND_DIRECTIONS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "Variable"];
 const BASE_PRODUCTS = [
   { id: "nitram", name: "Nitram 34.5%" },
@@ -52,6 +55,8 @@ export function FieldMode({ farm, fields, user, onExit, onNavigate }) {
   const [gpsPos, setGpsPos] = useState(null);
   const [gpsError, setGpsError] = useState(null);
   const [quickLog, setQuickLog] = useState(false);
+  const [activeS2Index, setActiveS2Index] = useState(null);
+  const [activeS1Band, setActiveS1Band] = useState(null);
   const mapRef = useRef(null);
   const [teamLocations, setTeamLocations] = useLocalValue("team_locations", farmId, []);
 
@@ -75,24 +80,31 @@ export function FieldMode({ farm, fields, user, onExit, onNavigate }) {
   const selectedHealth = selectedId ? health.get(selectedId) : null;
   const selectedPlanting = selectedId ? plantingsMap[selectedId]?.[0] : null;
   const selectedAttr = selectedId ? attrs[selectedId] : null;
+  const selectedFieldIds = useMemo(() => (selectedId ? [selectedId] : []), [selectedId]);
+  const { latest: latestS2ByField, status: s2Status } = useFieldNdviScenes(selectedFieldIds);
+  const { latest: latestS1ByField, status: s1Status } = useFieldSarScenes(selectedFieldIds);
+  const selectedS2 = selectedId ? latestS2ByField.get(selectedId) || null : null;
+  const selectedS1 = selectedId ? latestS1ByField.get(selectedId) || null : null;
 
   const dsp = selectedPlanting ? daysSincePlanting(selectedPlanting.plantingDate) : null;
   const stg = selectedPlanting ? expectedStage(selectedPlanting.crop, dsp) : null;
 
-  const liveLocations = useMemo(() => {
+  const trackedLocations = useMemo(() => {
     const cutoff = Date.now() - 30 * 60 * 1000;
     return (Array.isArray(teamLocations) ? teamLocations : [])
       .filter((loc) => Number.isFinite(loc.lat) && Number.isFinite(loc.lng))
-      .filter((loc) => new Date(loc.updatedAt).getTime() >= cutoff)
-      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+      .map((loc) => ({ ...loc, isLive: new Date(loc.updatedAt).getTime() >= cutoff }))
+      .sort((a, b) => Number(b.isLive) - Number(a.isLive) || (a.name || "").localeCompare(b.name || ""));
   }, [teamLocations]);
 
-  const workerMarkers = useMemo(() => liveLocations.map((loc) => ({
+  const liveLocations = useMemo(() => trackedLocations.filter((loc) => loc.isLive), [trackedLocations]);
+
+  const workerMarkers = useMemo(() => trackedLocations.map((loc) => ({
     id: loc.id,
     lat: loc.lat,
     lng: loc.lng,
-    color: loc.id === (user?.id || user?.email || "local-device") ? "#ec9a29" : "#104e3f",
-  })), [liveLocations, user?.email, user?.id]);
+    color: loc.isLive ? (loc.id === (user?.id || user?.email || "local-device") ? "#ec9a29" : "#104e3f") : "#7b8a82",
+  })), [trackedLocations, user?.email, user?.id]);
 
   // GPS tracking
   useEffect(() => {
@@ -120,7 +132,17 @@ export function FieldMode({ farm, fields, user, onExit, onNavigate }) {
 
   const handleFieldTap = useCallback((id) => {
     setSelectedId(id);
-    setSheetState("peek");
+    setSheetState("full");
+  }, []);
+
+  const closeSheet = useCallback(() => {
+    setQuickLog(false);
+    setSheetState("collapsed");
+  }, []);
+
+  const clearRasters = useCallback(() => {
+    setActiveS2Index(null);
+    setActiveS1Band(null);
   }, []);
 
   // Build health choropleth
@@ -140,6 +162,54 @@ export function FieldMode({ farm, fields, user, onExit, onNavigate }) {
   const centerGps = useCallback(() => {
     if (gpsPos) mapRef.current?.setCenterZoom?.(gpsPos.lat, gpsPos.lng, 17);
   }, [gpsPos]);
+
+  const liveRasterOverlays = useMemo(() => {
+    if (!selected) return null;
+    const overlays = [];
+    if (activeS2Index && selectedS2?.item_id && selectedS2.status === "ok") {
+      const index = SPECTRAL_INDICES[activeS2Index] || SPECTRAL_INDICES.ndvi;
+      const url = buildSpectralTileUrlFn({
+        itemId: selectedS2.item_id,
+        collection: selectedS2.collection || "sentinel-2-l2a",
+        index: index.id,
+        colormap: index.colormap,
+        rescale: `${index.min},${index.max}`,
+      });
+      if (url) {
+        overlays.push({
+          id: `live-s2-${index.id}-${selected.id}-${selectedS2.item_id}`,
+          opacity: 0.72,
+          minZoom: 8,
+          maxZoom: 19,
+          url,
+          clipFields: [selected],
+        });
+      }
+    }
+    if (activeS1Band && selectedS1?.item_id && selectedS1.status === "ok") {
+      const band = SAR_BAND_DEFAULTS[activeS1Band] || SAR_BAND_DEFAULTS.vh;
+      const url = buildSarTileUrlFn({
+        itemId: selectedS1.item_id,
+        collection: selectedS1.collection || "sentinel-1-rtc",
+        band: activeS1Band,
+        rescale: band.rescale,
+        colormap: band.colormap,
+      });
+      if (url) {
+        overlays.push({
+          id: `live-s1-${activeS1Band}-${selected.id}-${selectedS1.item_id}`,
+          opacity: 0.64,
+          minZoom: 8,
+          maxZoom: 19,
+          url,
+          clipFields: [selected],
+        });
+      }
+    }
+    return overlays.length ? overlays : null;
+  }, [activeS1Band, activeS2Index, selected, selectedS1, selectedS2]);
+
+  const rasterActive = Boolean(liveRasterOverlays?.length);
 
   // Quick log form
   const [logProduct, setLogProduct] = useState("");
@@ -252,6 +322,8 @@ export function FieldMode({ farm, fields, user, onExit, onNavigate }) {
           selectedFieldId={selectedId}
           choropleth={choropleth}
           pointMarkers={workerMarkers}
+          overlays={liveRasterOverlays}
+          suppressFieldFill={rasterActive}
           controls={false}
           uiInsets={{ bottom: mapBottomInset }}
           onSelectField={handleFieldTap}
@@ -278,7 +350,7 @@ export function FieldMode({ farm, fields, user, onExit, onNavigate }) {
           <span style={{ fontFamily: fonts.mono, fontSize: 9, color: brand.muted }}>last 30 min</span>
         </div>
         <div style={{ display: "grid", gap: 5, maxHeight: 132, overflowY: "auto" }} className="tilth-scroll">
-          {liveLocations.length ? liveLocations.map((loc) => {
+          {trackedLocations.length ? trackedLocations.map((loc) => {
             const isMe = loc.id === (user?.id || user?.email || "local-device");
             return (
               <button
@@ -292,26 +364,26 @@ export function FieldMode({ farm, fields, user, onExit, onNavigate }) {
                   gap: 8,
                   border: `1px solid ${isMe ? "#ec9a29" : brand.border}`,
                   borderRadius: radius.base,
-                  background: isMe ? "#fff7ed" : brand.white,
+                  background: isMe ? "#fff7ed" : loc.isLive ? brand.white : brand.bgSection,
                   padding: "6px 8px",
                   cursor: "pointer",
                   textAlign: "left",
                 }}
               >
                 <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 999, background: isMe ? "#ec9a29" : brand.forest, border: `2px solid ${brand.white}`, boxShadow: "0 0 0 1px rgba(16,78,63,0.18)" }} />
+                  <span style={{ width: 8, height: 8, borderRadius: 999, background: loc.isLive ? (isMe ? "#ec9a29" : brand.forest) : "#7b8a82", border: `2px solid ${brand.white}`, boxShadow: "0 0 0 1px rgba(16,78,63,0.18)" }} />
                   <span style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: brand.forest, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {isMe ? "You" : (loc.name?.split("@")[0] || "Device")}
                   </span>
                 </span>
                 <span style={{ fontFamily: fonts.mono, fontSize: 9, color: brand.muted, whiteSpace: "nowrap" }}>
-                  ±{Math.round(loc.accuracy || 0)}m
+                  {loc.isLive ? `±${Math.round(loc.accuracy || 0)}m` : "last known"}
                 </span>
               </button>
             );
           }) : (
             <div style={{ fontFamily: fonts.sans, fontSize: 12, color: brand.muted, lineHeight: 1.35 }}>
-              No live locations yet. Open this map on each work phone and allow GPS access.
+              No saved locations yet. Open this map on each work phone and allow GPS access.
             </div>
           )}
         </div>
@@ -344,17 +416,66 @@ export function FieldMode({ farm, fields, user, onExit, onNavigate }) {
         display: "flex", flexDirection: "column",
         overflow: "hidden",
       }}>
-        {/* Drag handle */}
-        <button
-          type="button"
-          onClick={() => setSheetState((s) => s === "collapsed" ? "peek" : s === "peek" ? "full" : "collapsed")}
-          style={{ padding: "10px 0 6px", background: "transparent", border: "none", cursor: "pointer", width: "100%" }}
-        >
-          <div style={{ width: 36, height: 4, borderRadius: 2, background: brand.border, margin: "0 auto" }} />
-        </button>
+        <div style={{ padding: "10px 14px 8px", borderBottom: sheetState === "full" ? `1px solid ${brand.border}` : "none" }}>
+          {sheetState === "full" ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontFamily: fonts.mono, fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", color: brand.muted }}>
+                  Field menu
+                </div>
+                <div style={{ fontFamily: fonts.sans, fontSize: 13, fontWeight: 650, color: brand.forest, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {selected?.name || "Live map"}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closeSheet}
+                style={{
+                  minHeight: 38,
+                  padding: "8px 12px",
+                  border: `1px solid ${brand.border}`,
+                  borderRadius: radius.base,
+                  background: brand.white,
+                  color: brand.forest,
+                  fontFamily: fonts.mono,
+                  fontSize: 10,
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                  flex: "0 0 auto",
+                }}
+              >
+                Close
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => selected && setSheetState("full")}
+              disabled={!selected}
+              style={{
+                width: "100%",
+                minHeight: 52,
+                padding: "10px 12px",
+                border: `1px solid ${selected ? brand.forest : brand.border}`,
+                borderRadius: radius.base,
+                background: selected ? brand.forest : brand.bgSection,
+                color: selected ? brand.white : brand.muted,
+                fontFamily: fonts.mono,
+                fontSize: 11,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                cursor: selected ? "pointer" : "default",
+                boxShadow: selected ? "0 8px 22px rgba(16,78,63,0.16)" : "none",
+              }}
+            >
+              {selected ? `Open ${selected.name || "field"} menu` : "Tap a field to open menu"}
+            </button>
+          )}
+        </div>
 
         {/* Sheet content */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "0 14px 14px" }} className="tilth-scroll">
+        <div style={{ flex: 1, overflowY: "auto", padding: sheetState === "full" ? "10px 14px 14px" : "0 14px 14px" }} className="tilth-scroll">
           {selected ? (
             quickLog ? (
               /* Quick log form */
@@ -412,6 +533,14 @@ export function FieldMode({ farm, fields, user, onExit, onNavigate }) {
                       {selectedHealth.flags.slice(0, 3).map((fl) => (
                         <Pill key={fl} tone={fl.includes("dip") || fl === "late_emergence" ? "danger" : "warn"} style={{ fontSize: 9, textTransform: "none" }}>{FLAG_LABELS[fl] || fl}</Pill>
                       ))}
+                      {SPECTRAL_INDEX_LIST.slice(0, 6).map((idx) => {
+                        const value = selectedHealth.metrics?.spectral?.[idx.id];
+                        return Number.isFinite(value) ? (
+                          <Pill key={idx.id} tone={spectralTone(value, idx.id)} style={{ fontSize: 9, textTransform: "none" }} title={idx.interpretation}>
+                            {idx.label} {formatSpectralValue(value)}
+                          </Pill>
+                        ) : null;
+                      })}
                     </div>
                   </div>
                 )}
@@ -431,6 +560,73 @@ export function FieldMode({ farm, fields, user, onExit, onNavigate }) {
                     {stg.isLate && <div style={{ fontFamily: fonts.mono, fontSize: 9, color: brand.warn, marginTop: 3 }}>Behind expected schedule</div>}
                   </div>
                 )}
+
+                {/* Selected-field raster overlays */}
+                <div style={{ padding: "8px 10px", borderRadius: radius.base, border: `1px solid ${brand.border}`, background: brand.white, display: "grid", gap: 7 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                    <Kicker>Inspect rasters</Kicker>
+                    {rasterActive ? (
+                      <Button variant="ghost" size="sm" onClick={clearRasters} style={{ minHeight: 30, padding: "5px 8px", fontSize: 9 }}>
+                        Standard view
+                      </Button>
+                    ) : (
+                      <span style={{ fontFamily: fonts.mono, fontSize: 9, color: brand.muted }}>selected field only</span>
+                    )}
+                  </div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <div>
+                      <div style={{ fontFamily: fonts.mono, fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: brand.muted, marginBottom: 4 }}>
+                        Sentinel-2 optical
+                      </div>
+                      <div className="tilth-fieldmode-raster-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 5 }}>
+                        {SPECTRAL_INDEX_LIST.map((idx) => (
+                          <Button
+                            key={idx.id}
+                            variant={activeS2Index === idx.id ? "primary" : "secondary"}
+                            size="sm"
+                            onClick={() => setActiveS2Index((current) => current === idx.id ? null : idx.id)}
+                            disabled={!selectedS2}
+                            title={selectedS2 ? `Toggle latest Sentinel-2 ${idx.label} raster clipped to this field.` : `No Sentinel-2 raster ready (${s2Status}).`}
+                            style={{ minHeight: 34, padding: "6px 7px", fontSize: 9 }}
+                          >
+                            {idx.label}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontFamily: fonts.mono, fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: brand.muted, marginBottom: 4 }}>
+                        Sentinel-1 radar
+                      </div>
+                      <div className="tilth-fieldmode-raster-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 }}>
+                        {Object.entries(SAR_BAND_DEFAULTS).map(([bandId, band]) => (
+                          <Button
+                            key={bandId}
+                            variant={activeS1Band === bandId ? "primary" : "secondary"}
+                            size="sm"
+                            onClick={() => setActiveS1Band((current) => current === bandId ? null : bandId)}
+                            disabled={!selectedS1}
+                            title={selectedS1 ? `Toggle latest Sentinel-1 ${band.label} raster clipped to this field.` : `No Sentinel-1 raster ready (${s1Status}).`}
+                            style={{ minHeight: 34, padding: "6px 7px", fontSize: 9 }}
+                          >
+                            {bandId.toUpperCase()}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    <Pill tone={selectedS2 ? "ok" : "neutral"} style={{ fontSize: 9 }}>
+                      S2 {selectedS2?.scene_datetime ? new Date(selectedS2.scene_datetime).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : s2Status}
+                    </Pill>
+                    <Pill tone={selectedS1 ? "ok" : "neutral"} style={{ fontSize: 9 }}>
+                      S1 {selectedS1?.scene_datetime ? new Date(selectedS1.scene_datetime).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : s1Status}
+                    </Pill>
+                    {rasterActive ? (
+                      <Pill tone="info" style={{ fontSize: 9 }}>Boundary only</Pill>
+                    ) : null}
+                  </div>
+                </div>
 
                 {/* Action buttons */}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
@@ -456,21 +652,31 @@ export function FieldMode({ farm, fields, user, onExit, onNavigate }) {
             right: 8px !important;
             top: 8px !important;
             align-items: flex-start !important;
+            flex-direction: column !important;
+          }
+          .tilth-live-map-header > div {
+            width: 100% !important;
+          }
+          .tilth-live-map-header > div:last-child {
+            justify-content: space-between !important;
           }
           .tilth-live-people-card {
-            top: 74px !important;
+            top: 118px !important;
             left: 8px !important;
             width: min(260px, calc(100vw - 76px)) !important;
             max-height: 174px !important;
           }
           .tilth-live-map-controls {
-            top: 74px !important;
+            top: 118px !important;
             right: 8px !important;
           }
         }
         @media (max-width: 520px) {
           .tilth-fieldmode-form-grid {
             grid-template-columns: 1fr !important;
+          }
+          .tilth-fieldmode-raster-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
           }
         }
       `}</style>

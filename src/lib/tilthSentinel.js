@@ -192,17 +192,22 @@ export function useSentinelQueueStatus({ pollMs = 3000 } = {}) {
  * directly into FieldMapThree2D's `overlays={[{ mode: 'tile', url }]}`
  * prop.
  */
-export function buildNdviTileUrlFn({ itemId, collection = "sentinel-2-l2a", colormap, rescale } = {}) {
+export function buildSpectralTileUrlFn({ itemId, collection = "sentinel-2-l2a", index = "ndvi", colormap, rescale } = {}) {
   if (!itemId) return null;
   const base = getTilthApiBase();
   if (!base) return null;
   return (z, x, y) => {
     const params = new URLSearchParams();
     params.set("collection", collection);
+    params.set("index", index);
     if (colormap) params.set("colormap", colormap);
     if (rescale) params.set("rescale", rescale);
     return `${base}/api/sentinel/tiles/${encodeURIComponent(itemId)}/${z}/${x}/${y}.png?${params.toString()}`;
   };
+}
+
+export function buildNdviTileUrlFn(args = {}) {
+  return buildSpectralTileUrlFn({ ...args, index: "ndvi" });
 }
 
 /**

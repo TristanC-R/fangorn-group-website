@@ -672,8 +672,9 @@ function LedgerTab({
       </div>
 
       {showForm && (
-        <Card padding={16} style={{ marginBottom: 14 }}>
+        <Card className="tilth-finance-form-card" padding={16} style={{ marginBottom: 14 }}>
           <div
+            className="tilth-finance-form-grid"
             style={{
               display: "flex",
               justifyContent: "space-between",
@@ -700,6 +701,7 @@ function LedgerTab({
             </button>
           </div>
           <div
+            className="tilth-finance-form-actions"
             style={{
               display: "grid",
               gridTemplateColumns: "1fr 1fr 1fr",

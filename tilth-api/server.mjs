@@ -26,7 +26,7 @@ import {
 } from "./extract/index.mjs";
 import { strategyFor, EXTRACT_CONFIG } from "./extract/layers.mjs";
 import {
-  buildNdviTileUrl,
+  buildSpectralIndexTileUrl,
   fetchTitilerTile,
   mpcConfigSummary,
   ndviRender,
@@ -61,10 +61,10 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || "http://localhost:5173")
   .map((s) => s.trim())
   .filter(Boolean);
 const ALLOW_LOCAL_DEV_ORIGINS = process.env.ALLOW_LOCAL_DEV_ORIGINS !== "0";
-const OVERPASS_URL = (process.env.OVERPASS_URL || "https://overpass-api.de/api/interpreter").replace(
-  /\/$/,
-  ""
-);
+const OVERPASS_URLS = (process.env.OVERPASS_URLS || process.env.OVERPASS_URL || "https://overpass-api.de/api/interpreter,https://overpass.private.coffee/api/interpreter,https://overpass.kumi.systems/api/interpreter")
+  .split(",")
+  .map((s) => s.trim().replace(/\/$/, ""))
+  .filter(Boolean);
 const NOMINATIM_URL = (process.env.NOMINATIM_URL || "https://nominatim.openstreetmap.org").replace(
   /\/$/,
   ""
@@ -1509,23 +1509,27 @@ async function forwardOverpass(bodyEncoded) {
   if (cached && now - cached.t < OVERPASS_CACHE_TTL_MS) return cached;
 
   overpassChain = overpassChain.then(async () => {
-    const n = Date.now();
-    const wait = Math.max(0, lastOverpassAt + OVERPASS_MIN_GAP_MS - n);
-    if (wait) await new Promise((r) => setTimeout(r, wait));
-    lastOverpassAt = Date.now();
+    let out = null;
+    for (const endpoint of OVERPASS_URLS) {
+      const n = Date.now();
+      const wait = Math.max(0, lastOverpassAt + OVERPASS_MIN_GAP_MS - n);
+      if (wait) await new Promise((r) => setTimeout(r, wait));
+      lastOverpassAt = Date.now();
 
-    const res = await fetch(OVERPASS_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        Accept: "application/json",
-        "User-Agent": OSM_USER_AGENT,
-      },
-      body: bodyEncoded,
-    });
-    const text = await res.text();
-    const retryAfter = res.headers.get("retry-after") || res.headers.get("Retry-After") || null;
-    const out = { t: Date.now(), status: res.status, text, retryAfter };
+      const res = await fetch(`${endpoint}?${bodyEncoded}`, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "User-Agent": OSM_USER_AGENT,
+        },
+      });
+      const text = await res.text();
+      const retryAfter = res.headers.get("retry-after") || res.headers.get("Retry-After") || null;
+      out = { t: Date.now(), status: res.status, text, retryAfter };
+      if (res.status === 200) break;
+      if (!(res.status === 406 || res.status === 429 || res.status >= 500)) break;
+    }
+    if (!out) out = { t: Date.now(), status: 502, text: "", retryAfter: null };
     overpassCache.set(bodyEncoded, out);
     if (overpassCache.size > 500) {
       const firstKey = overpassCache.keys().next().value;
@@ -2326,8 +2330,9 @@ const server = http.createServer(async (req, res) => {
       const x = Number(sentinelMatch[3]);
       const y = Number(sentinelMatch[4]);
       const collection = (u.searchParams.get("collection") || "sentinel-2-l2a").trim();
-      const rescale = (u.searchParams.get("rescale") || ndviRender.defaultRescale).trim();
-      const colormap = (u.searchParams.get("colormap") || ndviRender.defaultColormap).trim();
+      const index = (u.searchParams.get("index") || "ndvi").trim().toLowerCase();
+      const rescale = (u.searchParams.get("rescale") || "").trim();
+      const colormap = (u.searchParams.get("colormap") || "").trim();
       // `mask=raw` lets callers ask for un-masked NDVI (no SCL gate).
       // Defaults to the SCL-masked expression so cloud / shadow / water
       // pixels render transparent and don't pollute the visual.
@@ -2338,7 +2343,10 @@ const server = http.createServer(async (req, res) => {
         json(res, 400, { error: "invalid z/x/y" });
         return;
       }
-      const cacheKey = `sentinel|${collection}|${itemId}|${z}|${x}|${y}|${rescale}|${colormap}|${applySclMask ? "scl" : "raw"}|${expression || "default"}`;
+      const cfg = ndviRender.spectralTileConfig?.(index) || ndviRender.spectralTileConfig?.("ndvi");
+      const effectiveRescale = rescale || cfg?.rescale || ndviRender.defaultRescale;
+      const effectiveColormap = colormap || cfg?.colormap || ndviRender.defaultColormap;
+      const cacheKey = `sentinel|${collection}|${itemId}|${z}|${x}|${y}|${index}|${effectiveRescale}|${effectiveColormap}|${applySclMask ? "scl" : "raw"}|${expression || "default"}`;
       const hit = sentinelCacheGet(cacheKey);
       if (hit) {
         res.writeHead(200, {
@@ -2349,13 +2357,14 @@ const server = http.createServer(async (req, res) => {
         res.end(hit.body);
         return;
       }
-      const upstreamUrl = buildNdviTileUrl({
+      const upstreamUrl = buildSpectralIndexTileUrl({
         collection,
         itemId,
         z,
         x,
         y,
-        opts: { rescale, colormap, expression, applySclMask },
+        index,
+        opts: { rescale: effectiveRescale, colormap: effectiveColormap, expression, applySclMask },
       });
       const result = await fetchTitilerTile(upstreamUrl);
       if (result.ok && /^image\//.test(result.contentType || "")) {

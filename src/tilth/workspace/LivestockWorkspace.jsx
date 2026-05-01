@@ -50,7 +50,7 @@ function daysRemaining(treatmentDate, withdrawalDays) {
 
 function TabBar({ tabs, active, onChange }) {
   return (
-    <div style={{ display: "flex", gap: 4, marginBottom: 14 }}>
+    <div className="tilth-livestock-tabbar" style={{ display: "flex", gap: 4, marginBottom: 14, flexWrap: "wrap", maxWidth: "100%" }}>
       {tabs.map((t) => (
         <button
           key={t}
@@ -61,6 +61,8 @@ function TabBar({ tabs, active, onChange }) {
             letterSpacing: "0.14em",
             textTransform: "uppercase",
             padding: "6px 12px",
+            flex: "0 1 auto",
+            minWidth: 0,
             borderRadius: radius.base,
             border: `1px solid ${active === t ? brand.forest : brand.border}`,
             background: active === t ? brand.bgSection : brand.white,
@@ -389,7 +391,7 @@ function AnimalForm({ animal, onSave, onCancel }) {
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
   return (
-    <Card padding={14} style={{ marginBottom: 12 }}>
+    <Card className="tilth-livestock-form-card" padding={14} style={{ marginBottom: 12 }}>
       <Kicker style={{ marginBottom: 10 }}>
         {animal.tag ? "Edit animal" : "New animal"}
       </Kicker>
@@ -559,7 +561,7 @@ function MovementsTab({ movements, setMovements }) {
       </div>
 
       {showForm ? (
-        <Card padding={14} style={{ marginBottom: 12 }}>
+        <Card className="tilth-livestock-form-card" padding={14} style={{ marginBottom: 12 }}>
           <Kicker style={{ marginBottom: 10 }}>New movement</Kicker>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             <FormField label="Direction">
@@ -819,7 +821,7 @@ function MedicinesTab({ medicines, setMedicines, farmId }) {
       </div>
 
       {showForm ? (
-        <Card padding={14} style={{ marginBottom: 12 }}>
+        <Card className="tilth-livestock-form-card" padding={14} style={{ marginBottom: 12 }}>
           <Kicker style={{ marginBottom: 10 }}>New treatment</Kicker>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             <FormField label="Date">
@@ -1154,7 +1156,7 @@ function BreedingTab({ breeding, setBreeding, farmId }) {
       </div>
 
       {showForm ? (
-        <Card padding={14} style={{ marginBottom: 12 }}>
+        <Card className="tilth-livestock-form-card" padding={14} style={{ marginBottom: 12 }}>
           <Kicker style={{ marginBottom: 10 }}>New breeding event</Kicker>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             <FormField label="Event type">
@@ -1413,32 +1415,36 @@ export function LivestockWorkspace({ farm }) {
       }
     >
       <div
-        className="tilth-scroll"
         style={{
           flex: "1 1 auto",
           minHeight: 0,
-          overflowY: "auto",
-          overflowX: "hidden",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
         }}
       >
-        <TabBar
-          tabs={["register", "movements", "medicines", "breeding"]}
-          active={tab}
-          onChange={setTab}
-        />
-
-        {tab === "register" ? (
-          <RegisterTab
-            animals={animals}
-            setAnimals={setAnimals}
+        <div style={{ flex: "0 0 auto" }}>
+          <TabBar
+            tabs={["register", "movements", "medicines", "breeding"]}
+            active={tab}
+            onChange={setTab}
           />
-        ) : tab === "movements" ? (
-          <MovementsTab movements={movements} setMovements={setMovements} />
-        ) : tab === "medicines" ? (
-          <MedicinesTab medicines={medicines} setMedicines={setMedicines} farmId={farmId} />
-        ) : tab === "breeding" ? (
-          <BreedingTab breeding={breeding} setBreeding={setBreeding} farmId={farmId} />
-        ) : null}
+        </div>
+
+        <div className="tilth-scroll" style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
+          {tab === "register" ? (
+            <RegisterTab
+              animals={animals}
+              setAnimals={setAnimals}
+            />
+          ) : tab === "movements" ? (
+            <MovementsTab movements={movements} setMovements={setMovements} />
+          ) : tab === "medicines" ? (
+            <MedicinesTab medicines={medicines} setMedicines={setMedicines} farmId={farmId} />
+          ) : tab === "breeding" ? (
+            <BreedingTab breeding={breeding} setBreeding={setBreeding} farmId={farmId} />
+          ) : null}
+        </div>
       </div>
     </WorkspaceFrame>
   );

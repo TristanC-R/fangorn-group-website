@@ -77,7 +77,7 @@ export function InsightsWorkspace({ farm, fields, onNavigate }) {
       </div>
 
       <div style={panelStyle(tab === "health")}>
-        <HealthWorkspace fields={mappedFields} farmHealth={farmHealth} onNavigate={onNavigate} />
+        <HealthWorkspace farm={farm} fields={mappedFields} farmHealth={farmHealth} onNavigate={onNavigate} />
       </div>
       <div style={panelStyle(tab === "analytics")}>
         <AnalyticsWorkspace farm={farm} fields={mappedFields} farmHealth={farmHealth} />

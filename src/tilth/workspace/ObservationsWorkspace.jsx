@@ -13,6 +13,7 @@ import {
   FieldLabel,
   Divider,
 } from "../ui/primitives.jsx";
+import { useMediaQuery } from "../ui/mobileUx.js";
 import { useLocalValue } from "../state/localStore.js";
 
 const OBS_TYPES = [
@@ -104,6 +105,8 @@ export function ObservationsWorkspace({ farm, fields }) {
   const [saving, setSaving] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [editingId, setEditingId] = useState(null);
+  const isMobileForm = useMediaQuery("(max-width: 760px)");
+  const [showObservationForm, setShowObservationForm] = useState(false);
 
   const [filterField, setFilterField] = useState("");
   const [filterType, setFilterType] = useState("");
@@ -111,6 +114,7 @@ export function ObservationsWorkspace({ farm, fields }) {
   const [filterTo, setFilterTo] = useState("");
 
   const fileRef = useRef(null);
+  const cameraRef = useRef(null);
 
   const fieldMap = useMemo(() => {
     const m = new Map();
@@ -162,6 +166,7 @@ export function ObservationsWorkspace({ farm, fields }) {
       setFormPhotos((prev) => [...prev, ...resized].slice(0, 3));
     } catch { /* silent */ }
     if (fileRef.current) fileRef.current.value = "";
+    if (cameraRef.current) cameraRef.current.value = "";
   }, [formPhotos.length]);
 
   const removePhoto = useCallback((idx) => {
@@ -189,6 +194,7 @@ export function ObservationsWorkspace({ farm, fields }) {
     setFormPhotos([]);
     setFormLocation(null);
     setEditingId(null);
+    setShowObservationForm(false);
   }, []);
 
   const saveObservation = useCallback(() => {
@@ -210,8 +216,9 @@ export function ObservationsWorkspace({ farm, fields }) {
         return [entry, ...list];
       });
       resetForm();
+      if (isMobileForm) setShowObservationForm(false);
     } finally { setSaving(false); }
-  }, [formFieldId, formType, formNotes, formPhotos, formDatetime, formLocation, editingId, setObservations, resetForm]);
+  }, [formFieldId, formType, formNotes, formPhotos, formDatetime, formLocation, editingId, setObservations, resetForm, isMobileForm]);
 
   const deleteObservation = useCallback((id) => {
     setObservations((prev) => (Array.isArray(prev) ? prev : []).filter((o) => o.id !== id));
@@ -226,6 +233,7 @@ export function ObservationsWorkspace({ farm, fields }) {
     setFormNotes(obs.notes || "");
     setFormPhotos(obs.photos || []);
     setFormLocation(obs.location || null);
+    setShowObservationForm(true);
   }, []);
 
   const header = (
@@ -233,21 +241,23 @@ export function ObservationsWorkspace({ farm, fields }) {
       kicker="Field notes"
       title="Observations"
       description="Log what you see in the field \u2014 disease, pests, waterlogging, or anything else worth recording."
+      actions={<Button size="sm" onClick={() => setShowObservationForm(true)}>{editingId ? "Edit observation" : "Log observation"}</Button>}
     />
   );
 
   return (
     <WorkspaceFrame header={header}>
-      {/* Stats bar */}
-      <div className="tilth-observations-stats" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, flex: "0 0 auto" }}>
-        <Stat kicker="Total" value={stats.total} />
-        <Stat kicker="This week" value={stats.thisWeek} />
-        <Stat kicker="Most observed" value={stats.mostType ? (TYPE_MAP[stats.mostType]?.label || stats.mostType) : "\u2014"} />
-        <Stat kicker="Fields logged" value={stats.fieldsWithObs} />
-      </div>
+      <div className="tilth-observations-workspace-scroll">
+        {/* Stats bar */}
+        <div className="tilth-observations-stats" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, flex: "0 0 auto" }}>
+          <Stat kicker="Total" value={stats.total} />
+          <Stat kicker="This week" value={stats.thisWeek} />
+          <Stat kicker="Most observed" value={stats.mostType ? (TYPE_MAP[stats.mostType]?.label || stats.mostType) : "\u2014"} />
+          <Stat kicker="Fields logged" value={stats.fieldsWithObs} />
+        </div>
 
-      {/* Two-column layout */}
-      <div className="tilth-observations-layout" style={{ display: "flex", gap: 14, flex: 1, minHeight: 0, overflow: "hidden" }}>
+        {/* Two-column layout */}
+        <div className="tilth-observations-layout" style={{ display: "flex", gap: 14, flex: 1, minHeight: 0, overflow: "hidden" }}>
         {/* Left: timeline */}
         <div className="tilth-observations-timeline" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {/* Filters */}
@@ -323,7 +333,7 @@ export function ObservationsWorkspace({ farm, fields }) {
                                 </span>
                               </div>
                               {obs.notes && (
-                                <Body size="sm" style={{
+                                <Body className="tilth-observation-notes" size="sm" style={{
                                   overflow: "hidden", textOverflow: "ellipsis",
                                   display: "-webkit-box", WebkitLineClamp: expanded ? 999 : 2,
                                   WebkitBoxOrient: "vertical", lineHeight: 1.45,
@@ -369,7 +379,7 @@ export function ObservationsWorkspace({ farm, fields }) {
         </div>
 
         {/* Right: log form */}
-        <div className="tilth-observations-form-column tilth-scroll" style={{ flex: "0 0 320px", width: 320, overflowY: "auto" }}>
+        <div className={`tilth-observations-form-column tilth-scroll ${showObservationForm || editingId ? "tilth-mobile-sheet-open" : ""}`} style={{ flex: "0 0 320px", width: 320, overflowY: "auto" }}>
           <Card className="tilth-mobile-card" padding={16}>
             <Subpanel kicker="New observation" title={editingId ? "Editing" : "Log"}>
               {/* Field selector */}
@@ -451,9 +461,22 @@ export function ObservationsWorkspace({ farm, fields }) {
                     onChange={handlePhotos}
                     style={{ display: "none" }}
                   />
-                  <Button variant="secondary" size="sm" onClick={() => fileRef.current?.click()} style={{ marginBottom: 12 }}>
-                    Add photo
-                  </Button>
+                  <input
+                    ref={cameraRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={handlePhotos}
+                    style={{ display: "none" }}
+                  />
+                  <div className="tilth-observations-photo-actions" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                    <Button variant="secondary" size="sm" onClick={() => cameraRef.current?.click()}>
+                      Use camera
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => fileRef.current?.click()}>
+                      Select file
+                    </Button>
+                  </div>
                 </>
               )}
 
@@ -496,26 +519,42 @@ export function ObservationsWorkspace({ farm, fields }) {
                 <Button onClick={saveObservation} disabled={!formFieldId || saving}>
                   {editingId ? "Update observation" : "Save observation"}
                 </Button>
-                {editingId && (
+                {(editingId || showObservationForm) && (
                   <Button variant="ghost" onClick={resetForm}>Cancel</Button>
                 )}
               </div>
             </Subpanel>
           </Card>
         </div>
+        </div>
       </div>
       <style>{`
+        .tilth-observations-workspace-scroll {
+          flex: 1 1 auto;
+          min-height: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          overflow: hidden;
+        }
         @media (max-width: 760px) {
+          .tilth-observations-workspace-scroll,
+          .tilth-observations-workspace-scroll.tilth-scroll {
+            overflow-y: auto !important;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
+            padding-bottom: 18px !important;
+          }
           .tilth-observations-stats {
             grid-template-columns: 1fr 1fr !important;
           }
           .tilth-observations-layout {
             display: flex !important;
-            flex-direction: column-reverse !important;
+            flex-direction: column !important;
             gap: 12px !important;
-            overflow-y: auto !important;
-            min-height: 0 !important;
-            padding-bottom: 18px !important;
+            overflow: visible !important;
+            min-height: auto !important;
+            padding-bottom: 0 !important;
           }
           .tilth-observations-timeline,
           .tilth-observations-form-column {
@@ -527,6 +566,7 @@ export function ObservationsWorkspace({ farm, fields }) {
           .tilth-observations-list {
             flex: 0 0 auto !important;
             min-height: auto !important;
+            max-height: none !important;
             overflow: visible !important;
           }
           .tilth-observations-filters {
@@ -571,6 +611,19 @@ export function ObservationsWorkspace({ farm, fields }) {
           .tilth-observation-card-meta > :nth-child(2) {
             min-width: 0;
             overflow-wrap: anywhere;
+          }
+          .tilth-observation-notes {
+            display: block !important;
+            -webkit-line-clamp: unset !important;
+            overflow: visible !important;
+          }
+          .tilth-observations-photo-actions {
+            display: grid !important;
+            grid-template-columns: 1fr 1fr !important;
+            width: 100% !important;
+          }
+          .tilth-observations-photo-actions button {
+            width: 100% !important;
           }
           .tilth-observations-actions {
             display: grid !important;

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { brand, fonts, radius } from "../ui/theme.js";
 import {
   Body,
+  Button,
   Card,
   EmptyState,
   Kicker,
@@ -20,6 +21,11 @@ import {
   scoreColor,
   scoreTone,
 } from "../../lib/cropHealth.js";
+import {
+  SPECTRAL_INDEX_LIST,
+  formatSpectralValue,
+  spectralTone,
+} from "../../lib/spectralIndices.js";
 
 /**
  * Crop health workspace — the "what should I do today" view of the
@@ -144,7 +150,134 @@ function useNarrowViewport(maxWidth = 760) {
   return matches;
 }
 
-export function HealthWorkspace({ fields, farmHealth, onNavigate }) {
+function signalNarrative(rec) {
+  if (!rec?.metrics) return [];
+  const spectral = rec.metrics.spectral || {};
+  const out = [];
+  const ndvi = spectral.ndvi ?? rec.metrics.ndviMean;
+  const evi = spectral.evi ?? rec.metrics.eviMean;
+  const ndmi = spectral.ndmi ?? rec.metrics.ndmiMean;
+  const ndwi = spectral.ndwi ?? rec.metrics.ndwiMean;
+  const ndre = spectral.ndre ?? rec.metrics.ndreMean;
+  const savi = spectral.savi ?? rec.metrics.saviMean;
+  const nbr = spectral.nbr ?? rec.metrics.nbrMean;
+  if (Number.isFinite(ndvi)) {
+    out.push(`NDVI ${formatSpectralValue(ndvi)} sets the broad canopy baseline.`);
+  }
+  if (Number.isFinite(evi)) {
+    out.push(`EVI ${formatSpectralValue(evi)} checks dense-canopy vigour where NDVI can saturate${rec.flags?.includes("dense_canopy_decline") ? " and is currently declining" : ""}.`);
+  }
+  if (Number.isFinite(ndre)) {
+    out.push(`NDRE ${formatSpectralValue(ndre)} reads chlorophyll/nitrogen status${rec.flags?.includes("chlorophyll_stress") ? " and is flagging stress" : ""}.`);
+  }
+  if (Number.isFinite(savi)) {
+    out.push(`SAVI ${formatSpectralValue(savi)} adjusts for bare-soil influence${rec.flags?.includes("thin_canopy") ? " and suggests thin canopy" : ""}.`);
+  }
+  if (Number.isFinite(ndmi)) {
+    out.push(`NDMI ${formatSpectralValue(ndmi)} reads canopy moisture${rec.flags?.includes("water_stress") || rec.flags?.includes("moisture_decline") ? " and is part of the moisture warning" : ""}.`);
+  }
+  if (Number.isFinite(ndwi)) {
+    out.push(`NDWI ${formatSpectralValue(ndwi)} adds surface wetness context${rec.flags?.includes("surface_wetness") ? " and may indicate wet ground" : ""}.`);
+  }
+  if (Number.isFinite(nbr)) {
+    out.push(`NBR ${formatSpectralValue(nbr)} adds residue/exposed-soil or disturbance context${rec.flags?.includes("disturbance_or_exposed_soil") ? " and is flagged for follow-up" : ""}.`);
+  }
+  return out;
+}
+
+function finiteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function roundMetric(value, digits = 3) {
+  const number = finiteNumber(value);
+  return number == null ? null : Number(number.toFixed(digits));
+}
+
+function rowMetric(row, id) {
+  if (!row) return null;
+  const snakeKey = `${id}_mean`;
+  const camelKey = `${id}Mean`;
+  const value =
+    row[snakeKey] ??
+    row[camelKey] ??
+    row[id] ??
+    row.metrics?.spectral?.[id] ??
+    row.spectral?.[id];
+  return roundMetric(value);
+}
+
+function compactScene(row) {
+  if (!row) return null;
+  return {
+    date: String(row.scene_datetime || row.scene_date || "").slice(0, 10),
+    status: row.status,
+    ...Object.fromEntries(SPECTRAL_INDEX_LIST.map((idx) => [idx.id, rowMetric(row, idx.id)])),
+    cloudPct: roundMetric(row.scene_cloud_pct ?? row.sceneCloudPct ?? row.field_cloud_pct ?? row.fieldCloudPct, 1),
+    validPixels: finiteNumber(row.valid_pixel_count ?? row.validPixelCount),
+    vhDb: roundMetric(row.vh_mean_db ?? row.vhMeanDb ?? row.vh_mean ?? row.vhMean),
+    vvDb: roundMetric(row.vv_mean_db ?? row.vvMeanDb ?? row.vv_mean ?? row.vvMean),
+    vhVvRatio: roundMetric(row.vh_vv_ratio_mean_db ?? row.vhVvRatioMeanDb ?? row.vh_vv_ratio_mean ?? row.vhVvRatioMean ?? row.vh_vv_ratio),
+  };
+}
+
+function average(values) {
+  const valid = values.map(finiteNumber).filter((value) => value != null);
+  if (!valid.length) return null;
+  return valid.reduce((sum, value) => sum + value, 0) / valid.length;
+}
+
+function trendDirection(change) {
+  if (change == null) return "unknown";
+  if (Math.abs(change) < 0.02) return "stable";
+  return change > 0 ? "improving" : "declining";
+}
+
+function buildSpectralTimeSeriesSummary(scenes) {
+  const rows = (scenes || [])
+    .filter(Boolean)
+    .slice()
+    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+  const byIndex = Object.fromEntries(SPECTRAL_INDEX_LIST.map((idx) => {
+    const points = rows
+      .map((row) => ({ date: row.date, value: finiteNumber(row[idx.id]) }))
+      .filter((point) => point.date && point.value != null);
+    const first = points[0] || null;
+    const latest = points.at(-1) || null;
+    const previous = points.at(-2) || null;
+    const changeFromFirst = first && latest ? latest.value - first.value : null;
+    const recentChange = previous && latest ? latest.value - previous.value : null;
+    return [idx.id, {
+      label: idx.label,
+      observations: points.length,
+      firstDate: first?.date || null,
+      latestDate: latest?.date || null,
+      firstValue: roundMetric(first?.value),
+      latestValue: roundMetric(latest?.value),
+      average: roundMetric(average(points.map((point) => point.value))),
+      changeFromFirst: roundMetric(changeFromFirst),
+      recentChange: roundMetric(recentChange),
+      direction: trendDirection(changeFromFirst),
+      recentPoints: points.slice(-8).map((point) => ({
+        date: point.date,
+        value: roundMetric(point.value),
+      })),
+    }];
+  }));
+
+  return {
+    sceneCount: rows.length,
+    dateRange: rows.length ? {
+      first: rows[0].date,
+      latest: rows.at(-1).date,
+    } : null,
+    byIndex,
+  };
+}
+
+export function HealthWorkspace({ farm, fields, farmHealth, onNavigate }) {
+  const farmId = farm?.id || null;
   const withRings = useMemo(
     () =>
       (fields || []).filter(
@@ -178,6 +311,7 @@ export function HealthWorkspace({ fields, farmHealth, onNavigate }) {
       return {
         id: f.id,
         name: f.name || "Unnamed field",
+        field: f,
         rec,
       };
     });
@@ -226,6 +360,65 @@ export function HealthWorkspace({ fields, farmHealth, onNavigate }) {
     const c = ringCentroid(target.boundary);
     return { lat: c.lat, lng: c.lng, zoom: selectedFieldId ? 14 : 12 };
   }, [selectedFieldId, withRings]);
+
+  const askAssistantForField = async (field, rec) => {
+    if (!field?.id || !rec || !farmId) return;
+    const ndviScenes = (farmHealth.ndvi?.scenes?.get(field.id) || []).slice(0, 12).map(compactScene);
+    const sarScenes = (farmHealth.sar?.scenes?.get(field.id) || []).slice(0, 8).map(compactScene);
+    const spectralTimeSeries = buildSpectralTimeSeriesSummary(ndviScenes);
+    const payload = {
+      field: {
+        id: field.id,
+        name: field.name || "Unnamed field",
+        areaHa: field.areaHa ?? field.area_ha ?? null,
+      },
+      health: {
+        score: rec.score,
+        trend: rec.trend,
+        stage: STAGE_LABELS[rec.stage] || rec.stage,
+        confidence: rec.confidence,
+        summary: rec.summary,
+        flags: (rec.flags || []).map((flag) => FLAG_LABELS[flag] || flag),
+        warnings: rec.warnings || [],
+      },
+      currentSpectralMeans: SPECTRAL_INDEX_LIST.reduce((acc, idx) => {
+        const value = finiteNumber(rec.metrics?.spectral?.[idx.id] ?? rec.metrics?.[`${idx.id}Mean`]);
+        if (value != null) acc[idx.id] = Number(value.toFixed(4));
+        return acc;
+      }, {}),
+      spectralInterpretationNotes: signalNarrative(rec),
+      spectralTimeSeries,
+      recentSentinel2Scenes: ndviScenes,
+      recentSentinel1Scenes: sarScenes,
+      cohort: {
+        medianNdvi: Number.isFinite(cohort.median) ? Number(cohort.median.toFixed(4)) : null,
+        stdevNdvi: Number.isFinite(cohort.stdev) ? Number(cohort.stdev.toFixed(4)) : null,
+      },
+    };
+
+    const prompt = [
+      `Produce a short crop-health report for "${payload.field.name}" in its current state.`,
+      "Use all available evidence, not just NDVI: NDVI, EVI, NDWI, NDMI, NDRE, SAVI, NBR, Sentinel-1 radar if present, warnings, stage, confidence, and recent trends.",
+      "Use the spectralTimeSeries object to discuss movement over time. Compare latest values with first values, recent changes, direction and recentPoints for each index rather than only describing the current snapshot.",
+      "If a time-series has too few observations for an index, say that clearly and avoid over-interpreting it.",
+      "Explain what the results probably mean, any uncertainty or data gaps, and give practical next-step suggestions for a farm manager.",
+      "Keep it concise with headings: Current read, What the indices are saying, Suggested checks/actions.",
+      "Write the report only. Do not create suggested actions, confirmation tasks, or records.",
+      "",
+      "Field data summary JSON:",
+      JSON.stringify(payload),
+    ].join("\n");
+
+    window.dispatchEvent(new CustomEvent("tilth:assistant-request", {
+      detail: {
+        mode: "chat",
+        scope: "fields_satellite",
+        allowActions: false,
+        displayMessage: `Interpret crop health for ${payload.field.name}`,
+        message: prompt,
+      },
+    }));
+  };
 
   // Whole-farm summary numbers for the header strip.
   const summary = useMemo(() => {
@@ -503,7 +696,7 @@ export function HealthWorkspace({ fields, farmHealth, onNavigate }) {
                 alignContent: "start",
               }}
             >
-              {rows.map(({ id, name, rec }) => (
+              {rows.map(({ id, name, field, rec }) => (
                 <Row
                   key={id}
                   onClick={() => setSelectedFieldId(id)}
@@ -644,32 +837,65 @@ export function HealthWorkspace({ fields, farmHealth, onNavigate }) {
                             gap: 4,
                           }}
                         >
-                          {[
-                            ["NDVI", rec.metrics.ndviMean],
-                            ["NDMI", rec.metrics.ndmiMean],
-                            ["NDRE", rec.metrics.ndreMean],
-                            ["SAVI", rec.metrics.saviMean],
-                          ].map(([label, value]) => Number.isFinite(value) ? (
+                          {SPECTRAL_INDEX_LIST.map((idx) => {
+                            const value = rec.metrics.spectral?.[idx.id] ?? rec.metrics[`${idx.id}Mean`];
+                            return Number.isFinite(value) ? (
                             <Pill
-                              key={label}
-                              tone="neutral"
+                              key={idx.id}
+                              tone={spectralTone(value, idx.id)}
                               style={{ textTransform: "none", letterSpacing: "0.04em", fontSize: 9 }}
+                              title={idx.interpretation}
                             >
-                              {label} {value.toFixed(2)}
+                              {idx.label} {formatSpectralValue(value)}
                             </Pill>
-                          ) : null)}
+                            ) : null;
+                          })}
                         </div>
                       ) : null}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onNavigate?.("sensing");
-                        }}
-                        style={navButtonStyle}
-                      >
-                        Open remote sensing →
-                      </button>
+                      {signalNarrative(rec).length ? (
+                        <div
+                          style={{
+                            padding: "8px 10px",
+                            background: brand.bgSection,
+                            border: `1px solid ${brand.border}`,
+                            borderRadius: radius.base,
+                            display: "grid",
+                            gap: 4,
+                          }}
+                        >
+                          <Kicker>Spectral interpretation</Kicker>
+                          {signalNarrative(rec).slice(0, 5).map((line) => (
+                            <Body key={line} size="sm" color={brand.bodySoft}>
+                              {line}
+                            </Body>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          disabled={!rec || !farmId}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            askAssistantForField(field, rec);
+                          }}
+                          style={{ minHeight: 32, padding: "6px 9px", fontSize: 10 }}
+                        >
+                          Ask assistant
+                        </Button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onNavigate?.("sensing");
+                          }}
+                          style={navButtonStyle}
+                        >
+                          Open remote sensing →
+                        </button>
+                      </div>
                     </div>
                   ) : null}
                 </Row>
@@ -680,11 +906,14 @@ export function HealthWorkspace({ fields, farmHealth, onNavigate }) {
           <Card padding={12} tone="section" style={{ flex: "0 0 auto" }}>
             <Kicker style={{ marginBottom: 6 }}>What does the score mean?</Kicker>
             <Body size="sm" style={{ lineHeight: 1.55 }}>
-              The score blends absolute NDVI vs the expected canopy for the
-              detected stage, the 14-day trend, where the field sits relative
-              to the rest of your farm, and how fresh the imagery is. Anomaly
-              flags knock it down further. Scores ≥ 70 are healthy; 45–69 is
-              worth a closer look; under 45 is critical.
+              The score blends the full Sentinel-2 spectral stack with radar
+              context: NDVI for canopy cover, EVI for dense-canopy vigour,
+              NDRE for chlorophyll, SAVI for soil-adjusted canopy, NDMI/NDWI
+              for moisture and wetness, and NBR for disturbance or exposed
+              soil context. Stage, trend, farm cohort position, data freshness,
+              cloud/radar disagreement, and anomaly flags adjust the score.
+              Scores ≥ 70 are healthy; 45–69 is worth a closer look; under 45
+              is critical.
             </Body>
           </Card>
         </div>
@@ -714,7 +943,7 @@ export function HealthWorkspace({ fields, farmHealth, onNavigate }) {
           }
           .tilth-health-map-card {
             flex: 0 0 auto !important;
-            height: min(48vh, 360px) !important;
+            height: min(48dvh, 360px) !important;
             min-height: 260px !important;
           }
           .tilth-health-rows {
@@ -732,7 +961,7 @@ export function HealthWorkspace({ fields, farmHealth, onNavigate }) {
             grid-template-columns: 1fr !important;
           }
           .tilth-health-map-card {
-            height: 42vh !important;
+            height: 42dvh !important;
             min-height: 240px !important;
           }
         }

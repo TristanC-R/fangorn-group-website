@@ -162,9 +162,56 @@ const VAULT_PROMPTS = [
 ];
 
 const DOCUMENT_LOAD_RETRY_DELAYS = [600, 1500, 3000];
+const DOCUMENT_CACHE_PREFIX = "tilth:document-vault:";
+const DOCUMENT_LIST_COLUMNS = [
+  "id",
+  "created_at",
+  "updated_at",
+  "farm_id",
+  "field_id",
+  "title",
+  "category",
+  "bucket",
+  "storage_path",
+  "filename",
+  "content_type",
+  "size_bytes",
+  "expiry_date",
+  "tags",
+  "notes",
+  "status",
+  "error_message",
+  "deleted_at",
+].join(",");
 
 function wait(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function documentCacheKey(farmId) {
+  return `${DOCUMENT_CACHE_PREFIX}${farmId || "none"}`;
+}
+
+function loadCachedDocuments(farmId) {
+  try {
+    const raw = window.localStorage.getItem(documentCacheKey(farmId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.docs) ? parsed.docs : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedDocuments(farmId, docs) {
+  try {
+    window.localStorage.setItem(documentCacheKey(farmId), JSON.stringify({
+      savedAt: Date.now(),
+      docs,
+    }));
+  } catch {
+    // Ignore storage quota/private mode failures.
+  }
 }
 
 function fileToBase64(file) {
@@ -221,6 +268,92 @@ function MiniStat({ label, value, tone }) {
   );
 }
 
+function StatusPill({ status }) {
+  const text = status || "uploaded";
+  const tone =
+    text === "failed" ? "danger" :
+      text === "completed" || text === "graph_loaded" ? "ok" :
+        ["processing", "queued", "parsed", "chunked", "embedded", "uploaded"].includes(text) ? "warn" :
+          "neutral";
+  return <Pill tone={tone}>{text.replace(/_/g, " ")}</Pill>;
+}
+
+function DocumentCard({ doc, fieldName, onOpen, onEdit, onDelete }) {
+  const days = daysUntil(doc.expiry);
+  const tone = expiryTone(days);
+  return (
+    <Card className="tilth-doc-card" padding={14} style={{ display: "grid", gap: 10 }}>
+      <div className="tilth-doc-card-head" style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+        <div style={{ minWidth: 0 }}>
+          <div
+            className="tilth-doc-card-filename"
+            style={{
+              fontFamily: fonts.sans,
+              fontSize: 14,
+              fontWeight: 650,
+              color: brand.forest,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {doc.title || titleFromFilename(doc.filename)}
+          </div>
+          <div
+            style={{
+              fontFamily: fonts.mono,
+              fontSize: 10,
+              color: brand.muted,
+              marginTop: 3,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {doc.filename || "No file name"} · uploaded {fmtDate(doc.uploadDate)}
+          </div>
+        </div>
+        <StatusPill status={doc.status} />
+      </div>
+
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+        <Pill tone="neutral">{CATEGORY_LABELS[doc.category] || doc.category}</Pill>
+        {fieldName ? <Pill tone="info">{fieldName}</Pill> : null}
+        {doc.expiry ? <Pill tone={tone}>{fmtDate(doc.expiry)} · {expiryLabel(days)}</Pill> : null}
+        {(doc.tags || []).slice(0, 4).map((tag) => (
+          <Pill key={tag} tone="neutral">{tag}</Pill>
+        ))}
+      </div>
+
+      {doc.notes ? (
+        <Body size="sm" style={{ color: brand.bodySoft, lineHeight: 1.45 }}>
+          {doc.notes}
+        </Body>
+      ) : null}
+
+      {doc.errorMessage ? (
+        <Body size="sm" style={{ color: brand.danger }}>
+          {doc.errorMessage}
+        </Body>
+      ) : null}
+
+      <div className="tilth-doc-card-actions" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {doc.storagePath ? (
+          <Button size="sm" variant="secondary" onClick={() => onOpen(doc)} style={{ minHeight: 32, padding: "6px 10px" }}>
+            Open
+          </Button>
+        ) : null}
+        <Button size="sm" variant="ghost" onClick={() => onEdit(doc)} style={{ minHeight: 32, padding: "6px 10px" }}>
+          Edit
+        </Button>
+        <Button size="sm" variant="danger" onClick={() => onDelete(doc.id)} style={{ minHeight: 32, padding: "6px 10px", marginLeft: "auto" }}>
+          Delete
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 export function DocumentsWorkspace({ farm, fields }) {
   const farmId = farm?.id || null;
 
@@ -232,6 +365,7 @@ export function DocumentsWorkspace({ farm, fields }) {
   const [editingId, setEditingId] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [file, setFile] = useState(null);
+  const [dragActive, setDragActive] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -240,6 +374,7 @@ export function DocumentsWorkspace({ farm, fields }) {
   const [chatSessionId, setChatSessionId] = useState(null);
   const [vaultBusy, setVaultBusy] = useState(null);
   const [suggestedActions, setSuggestedActions] = useState([]);
+  const [generatedReports, setGeneratedReports] = useState([]);
   const [applyingActionId, setApplyingActionId] = useState(null);
 
   const patch = (key, val) => setForm((f) => ({ ...f, [key]: val }));
@@ -249,7 +384,7 @@ export function DocumentsWorkspace({ farm, fields }) {
     async function fetchDocumentsOnce(signal) {
       return supabase
         .from("farm_documents")
-        .select("*")
+        .select(DOCUMENT_LIST_COLUMNS)
         .eq("farm_id", farmId)
         .is("deleted_at", null)
         .order("created_at", { ascending: false })
@@ -267,15 +402,17 @@ export function DocumentsWorkspace({ farm, fields }) {
         setLoading(false);
         return;
       }
-      setLoading(true);
+      const cached = loadCachedDocuments(farmId);
+      if (cached) setDocs(cached);
+      setLoading(!cached);
       setError(null);
       try {
         let data = null;
         let loadError = null;
         let lastThrown = null;
-        for (let attempt = 0; attempt <= DOCUMENT_LOAD_RETRY_DELAYS.length; attempt += 1) {
+        for (let attempt = 0; attempt <= 1; attempt += 1) {
           const controller = new AbortController();
-          const timeout = window.setTimeout(() => controller.abort(), 12_000);
+          const timeout = window.setTimeout(() => controller.abort(), 5_000);
           try {
             const result = await fetchDocumentsOnce(controller.signal);
             data = result.data;
@@ -288,7 +425,7 @@ export function DocumentsWorkspace({ farm, fields }) {
           }
           if (cancelled) return;
           if (!loadError && !lastThrown) break;
-          if (attempt >= DOCUMENT_LOAD_RETRY_DELAYS.length) break;
+          if (attempt >= 1) break;
           await wait(DOCUMENT_LOAD_RETRY_DELAYS[attempt]);
           if (cancelled) return;
         }
@@ -298,7 +435,9 @@ export function DocumentsWorkspace({ farm, fields }) {
           setError("Could not load documents. Check your connection and try again.");
           setDocs([]);
         } else {
-          setDocs((data || []).map(rowToDoc));
+          const nextDocs = (data || []).map(rowToDoc);
+          setDocs(nextDocs);
+          saveCachedDocuments(farmId, nextDocs);
         }
       } catch (err) {
         if (!cancelled) {
@@ -319,20 +458,59 @@ export function DocumentsWorkspace({ farm, fields }) {
   }, [farmId]);
 
   useEffect(() => {
+    let cancelled = false;
+    async function loadGeneratedReports() {
+      if (!farmId || !supabase) {
+        setGeneratedReports([]);
+        return;
+      }
+      const { data, error: reportsError } = await supabase
+        .from("assistant_generated_reports")
+        .select("id,title,report_type,content,metadata,created_at,updated_at")
+        .eq("farm_id", farmId)
+        .eq("metadata->>kind", "interpretive_report")
+        .eq("metadata->>vaultVisible", "true")
+        .order("created_at", { ascending: false })
+        .limit(20);
+      if (cancelled) return;
+      if (reportsError) {
+        console.warn("Could not load generated reports", reportsError.message);
+        setGeneratedReports([]);
+      } else {
+        setGeneratedReports(data || []);
+      }
+    }
+    loadGeneratedReports();
+    const interval = window.setInterval(loadGeneratedReports, 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [farmId]);
+
+  const processingDocIds = useMemo(() => {
+    const activeStatuses = new Set(["uploaded", "queued", "processing", "parsed", "chunked", "embedded"]);
+    return docs.filter((doc) => activeStatuses.has(doc.status)).map((doc) => doc.id).sort().join(",");
+  }, [docs]);
+
+  useEffect(() => {
     if (!supabase || !farmId) return undefined;
-    const activeStatuses = new Set(["uploaded", "queued", "processing", "parsed", "chunked", "embedded", "graph_loaded"]);
-    if (!docs.some((doc) => activeStatuses.has(doc.status))) return undefined;
+    if (!processingDocIds) return undefined;
     const interval = window.setInterval(async () => {
       const { data, error: refreshError } = await supabase
         .from("farm_documents")
-        .select("*")
+        .select(DOCUMENT_LIST_COLUMNS)
         .eq("farm_id", farmId)
         .is("deleted_at", null)
         .order("created_at", { ascending: false });
-      if (!refreshError) setDocs((data || []).map(rowToDoc));
-    }, 5000);
+      if (!refreshError) {
+        const nextDocs = (data || []).map(rowToDoc);
+        setDocs(nextDocs);
+        saveCachedDocuments(farmId, nextDocs);
+      }
+    }, 12_000);
     return () => window.clearInterval(interval);
-  }, [docs, farmId]);
+  }, [farmId, processingDocIds]);
 
   useEffect(() => {
     if (!supabase || !farmId) {
@@ -349,13 +527,13 @@ export function DocumentsWorkspace({ farm, fields }) {
         .order("created_at", { ascending: false });
       if (cancelled) return;
       if (actionError) {
-        setError(actionError.message);
+        console.warn("[DocumentsWorkspace] suggested actions load failed:", actionError.message);
         return;
       }
       setSuggestedActions(data || []);
     }
     loadSuggestedActions();
-    const interval = window.setInterval(loadSuggestedActions, 5000);
+    const interval = window.setInterval(loadSuggestedActions, 30_000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
@@ -433,15 +611,12 @@ export function DocumentsWorkspace({ farm, fields }) {
     setEditingId(null);
     setShowForm(false);
     setFile(null);
+    setDragActive(false);
     setError(null);
   };
 
   const handleSave = async () => {
     if (editingId && !form.title.trim()) return;
-    if (!editingId && !file) {
-      setError("Choose a file to add to the vault.");
-      return;
-    }
     if (!farmId) {
       setError("Select a farm before adding documents.");
       return;
@@ -493,20 +668,6 @@ export function DocumentsWorkspace({ farm, fields }) {
         } else {
           cancelFarmTaskBySourceKey(farmId, `document:${doc.id}:expiry`);
         }
-      } else if (file) {
-        const result = await callVaultApi("/api/document-vault/documents", {
-          fieldId: form.fieldId || null,
-          filename: form.filename.trim() || file.name || "document",
-          title: form.title.trim(),
-          category: form.category,
-          expiryDate: form.expiry || null,
-          tags,
-          notes: form.notes.trim(),
-          mimeType: file.type || "application/octet-stream",
-          fileBase64: await fileToBase64(file),
-        });
-        const doc = rowToDoc(result.document);
-        setDocs((prev) => [doc, ...prev.filter((item) => item.id !== doc.id)]);
       }
     } catch (err) {
       setError(err?.message || "Could not save document.");
@@ -573,6 +734,18 @@ export function DocumentsWorkspace({ farm, fields }) {
     if (data?.signedUrl) window.open(data.signedUrl, "_blank", "noopener,noreferrer");
   };
 
+  const openGeneratedReport = (report) => {
+    if (!report?.content || report.metadata?.status !== "completed") return;
+    const w = window.open("", "_blank", "width=960,height=1000");
+    if (!w) {
+      setError("Allow pop-ups to open the generated report.");
+      return;
+    }
+    w.document.open();
+    w.document.write(String(report.content).replace("</head>", `<script>document.title = ${JSON.stringify(report.title || "Generated report")};</script></head>`));
+    w.document.close();
+  };
+
   const fieldMap = useMemo(() => {
     const m = {};
     for (const f of fields || []) m[f.id] = f.name || "Unnamed field";
@@ -586,6 +759,27 @@ export function DocumentsWorkspace({ farm, fields }) {
 
   const documentTitle = (id) => docs.find((d) => d.id === id)?.title || "Document";
   const documentById = (id) => docs.find((d) => d.id === id) || null;
+  const visibleSuggestedActions = useMemo(() => {
+    return suggestedActions.filter((action) => {
+      if (action.action_type !== "spray_record") return true;
+      const doc = docs.find((item) => item.id === action.document_id) || null;
+      const payload = action.payload || {};
+      const evidence = [
+        action.title,
+        action.summary,
+        payload.productName,
+        payload.notes,
+        doc?.title,
+        doc?.filename,
+        doc?.notes,
+        ...(doc?.tags || []),
+      ].join(" ").toLowerCase();
+      const hasSprayEvidence = /\b(spray|sprayed|application|applied|herbicide|fungicide|insecticide|mapp|l\/ha|litres?\/ha)\b/.test(evidence);
+      const hasOperationalDetail = Boolean(payload.fieldId || Number(payload.rate) > 0 || payload.operator || /field|operator|rate|product/.test(evidence));
+      const looksPersonal = /\b(cv|curriculum vitae|resume|researcher|education|experience|skills|phd)\b/.test(evidence);
+      return hasSprayEvidence && hasOperationalDetail && !looksPersonal;
+    });
+  }, [suggestedActions, docs]);
   const uniqueSources = (sources = []) => {
     const seen = new Set();
     return sources.filter((source) => {
@@ -786,6 +980,48 @@ export function DocumentsWorkspace({ farm, fields }) {
     return payload;
   };
 
+  const uploadFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (!files.length) return;
+    if (!farmId) {
+      setError("Select a farm before adding documents.");
+      return;
+    }
+    if (!supabase) {
+      setError("The document vault is not available in this environment.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setFile(files[0] || null);
+    try {
+      for (const nextFile of files) {
+        const result = await callVaultApi("/api/document-vault/documents", {
+          filename: nextFile.name || "document",
+          title: titleFromFilename(nextFile.name),
+          category: "general",
+          tags: [],
+          notes: "",
+          mimeType: nextFile.type || "application/octet-stream",
+          fileBase64: await fileToBase64(nextFile),
+        });
+        const doc = rowToDoc(result.document);
+        setDocs((prev) => {
+          const next = [doc, ...prev.filter((item) => item.id !== doc.id)];
+          saveCachedDocuments(farmId, next);
+          return next;
+        });
+      }
+      setShowForm(false);
+      setFile(null);
+      setDragActive(false);
+    } catch (err) {
+      setError(err?.message || "Could not upload document.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const runChat = async () => {
     if (!chatMessage.trim()) return;
     const text = chatMessage.trim();
@@ -834,7 +1070,7 @@ export function DocumentsWorkspace({ farm, fields }) {
         <SectionHeader
           kicker="Vault"
           title="Documents"
-          description="Certificates, receipts, soil analyses and compliance evidence. Track expiry dates and link documents to fields."
+          description="Drop in farm documents, let the vault extract the details, then review and edit the finished record."
           actions={
             <Button
               variant={showForm ? "secondary" : "primary"}
@@ -844,7 +1080,7 @@ export function DocumentsWorkspace({ farm, fields }) {
                 else setShowForm(true);
               }}
             >
-              {showForm ? "Cancel" : "Add document"}
+              {showForm ? "Cancel" : "Upload documents"}
             </Button>
           }
         />
@@ -893,118 +1129,229 @@ export function DocumentsWorkspace({ farm, fields }) {
           {showForm && (
             <Card className="tilth-docs-form-card" padding={14}>
               <Kicker style={{ marginBottom: 10 }}>
-                {editingId ? "Edit document" : "New document"}
+                {editingId ? "Edit extracted details" : "Upload documents"}
               </Kicker>
-              <div className="tilth-docs-form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <div>
-                  <FieldLabel>Title</FieldLabel>
-                  <input
-                    value={form.title}
-                    onChange={(e) => patch("title", e.target.value)}
-                    placeholder={editingId ? "e.g. Red Tractor Certificate 2026" : "Optional - extracted after upload"}
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
-                  />
-                </div>
-                <div>
-                  <FieldLabel>Category</FieldLabel>
-                  <select
-                    value={form.category}
-                    onChange={(e) => patch("category", e.target.value)}
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
-                  >
-                    {CATEGORIES.map((c) => (
-                      <option key={c} value={c}>
-                        {CATEGORY_LABELS[c]}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <FieldLabel>Filename</FieldLabel>
-                  <input
-                    value={form.filename}
-                    onChange={(e) => patch("filename", e.target.value)}
-                    placeholder="e.g. red-tractor-cert-2026.pdf"
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
-                  />
-                </div>
-                <div>
-                  <FieldLabel>Upload file</FieldLabel>
-                  <input
-                    type="file"
-                    onChange={(e) => {
-                      const next = e.target.files?.[0] || null;
-                      setFile(next);
-                      if (next && !form.filename) patch("filename", next.name);
-                      if (next && !form.title) patch("title", titleFromFilename(next.name));
+              {!editingId ? (
+                <>
+                  <div
+                    onDragEnter={(event) => {
+                      event.preventDefault();
+                      setDragActive(true);
                     }}
-                    style={{ ...inputStyle, padding: "7px 10px", fontSize: 13 }}
-                  />
-                </div>
-                <div>
-                  <FieldLabel>Expiry date (optional)</FieldLabel>
-                  <input
-                    type="date"
-                    value={form.expiry}
-                    onChange={(e) => patch("expiry", e.target.value)}
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
-                  />
-                </div>
-                <div>
-                  <FieldLabel>Link to field (optional)</FieldLabel>
-                  <select
-                    value={form.fieldId}
-                    onChange={(e) => patch("fieldId", e.target.value)}
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      setDragActive(true);
+                    }}
+                    onDragLeave={(event) => {
+                      event.preventDefault();
+                      setDragActive(false);
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      setDragActive(false);
+                      uploadFiles(event.dataTransfer.files);
+                    }}
+                    style={{
+                      border: `1px dashed ${dragActive ? brand.forest : brand.border}`,
+                      background: dragActive ? brand.bgSection : brand.white,
+                      borderRadius: radius.lg,
+                      padding: "26px 18px",
+                      textAlign: "center",
+                      display: "grid",
+                      gap: 10,
+                      placeItems: "center",
+                    }}
                   >
-                    <option value="">None</option>
-                    {(fields || []).map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.name || "Unnamed field"}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <FieldLabel>Tags (comma-separated)</FieldLabel>
-                  <input
-                    value={form.tags}
-                    onChange={(e) => patch("tags", e.target.value)}
-                    placeholder="e.g. annual, compliance, audit"
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
-                  />
-                </div>
-                <div style={{ gridColumn: "1 / -1" }}>
-                  <FieldLabel>Notes (optional)</FieldLabel>
-                  <textarea
-                    value={form.notes}
-                    onChange={(e) => patch("notes", e.target.value)}
-                    rows={2}
-                    placeholder="Any additional notes about this document…"
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13, resize: "vertical" }}
-                  />
-                </div>
-                {error ? (
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <Body size="sm" style={{ color: brand.danger }}>{error}</Body>
+                    <div style={{ fontFamily: fonts.serif, fontSize: 20, color: brand.forest }}>
+                      Drop files here
+                    </div>
+                    <Body size="sm" style={{ color: brand.bodySoft, maxWidth: 520 }}>
+                      The vault will upload the file, queue extraction, and fill out the document title,
+                      category, dates, tags and evidence automatically where it can. Review and edit
+                      the record once processing has finished.
+                    </Body>
+                    <label
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        border: `1px solid ${brand.forest}`,
+                        background: brand.forest,
+                        color: brand.white,
+                        borderRadius: radius.base,
+                        padding: "9px 12px",
+                        fontFamily: fonts.mono,
+                        fontSize: 10,
+                        letterSpacing: "0.12em",
+                        textTransform: "uppercase",
+                        cursor: saving ? "not-allowed" : "pointer",
+                        opacity: saving ? 0.6 : 1,
+                      }}
+                    >
+                      {saving ? "Uploading..." : "Choose files"}
+                      <input
+                        type="file"
+                        multiple
+                        disabled={saving}
+                        onChange={(event) => {
+                          uploadFiles(event.target.files);
+                          event.target.value = "";
+                        }}
+                        style={{ display: "none" }}
+                      />
+                    </label>
+                    {file ? <Body size="sm" style={{ color: brand.muted }}>{file.name}</Body> : null}
                   </div>
-                ) : null}
-              </div>
-              <div className="tilth-docs-actions" style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={handleSave}
-                  disabled={saving || (editingId ? !form.title.trim() : !file && !form.filename.trim())}
-                >
-                  {saving ? "Saving…" : editingId ? "Save changes" : "Add document"}
-                </Button>
-                <Button variant="ghost" size="sm" onClick={resetForm}>
-                  Cancel
-                </Button>
-              </div>
+                  {error ? <Body size="sm" style={{ color: brand.danger, marginTop: 10 }}>{error}</Body> : null}
+                  <div className="tilth-docs-actions" style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                    <Button variant="ghost" size="sm" onClick={resetForm}>
+                      Close
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="tilth-docs-form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <div>
+                      <FieldLabel>Title</FieldLabel>
+                      <input
+                        value={form.title}
+                        onChange={(e) => patch("title", e.target.value)}
+                        placeholder="e.g. Red Tractor Certificate 2026"
+                        style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+                      />
+                    </div>
+                    <div>
+                      <FieldLabel>Category</FieldLabel>
+                      <select
+                        value={form.category}
+                        onChange={(e) => patch("category", e.target.value)}
+                        style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+                      >
+                        {CATEGORIES.map((c) => (
+                          <option key={c} value={c}>
+                            {CATEGORY_LABELS[c]}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <FieldLabel>Filename</FieldLabel>
+                      <input
+                        value={form.filename}
+                        onChange={(e) => patch("filename", e.target.value)}
+                        placeholder="e.g. red-tractor-cert-2026.pdf"
+                        style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+                      />
+                    </div>
+                    <div>
+                      <FieldLabel>Expiry date</FieldLabel>
+                      <input
+                        type="date"
+                        value={form.expiry}
+                        onChange={(e) => patch("expiry", e.target.value)}
+                        style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+                      />
+                    </div>
+                    <div>
+                      <FieldLabel>Link to field</FieldLabel>
+                      <select
+                        value={form.fieldId}
+                        onChange={(e) => patch("fieldId", e.target.value)}
+                        style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+                      >
+                        <option value="">None</option>
+                        {(fields || []).map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name || "Unnamed field"}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <FieldLabel>Tags</FieldLabel>
+                      <input
+                        value={form.tags}
+                        onChange={(e) => patch("tags", e.target.value)}
+                        placeholder="e.g. annual, compliance, audit"
+                        style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+                      />
+                    </div>
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <FieldLabel>Notes</FieldLabel>
+                      <textarea
+                        value={form.notes}
+                        onChange={(e) => patch("notes", e.target.value)}
+                        rows={2}
+                        placeholder="Any additional notes about this document..."
+                        style={{ ...inputStyle, padding: "8px 10px", fontSize: 13, resize: "vertical" }}
+                      />
+                    </div>
+                    {error ? (
+                      <div style={{ gridColumn: "1 / -1" }}>
+                        <Body size="sm" style={{ color: brand.danger }}>{error}</Body>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="tilth-docs-actions" style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={handleSave}
+                      disabled={saving || !form.title.trim()}
+                    >
+                      {saving ? "Saving..." : "Save changes"}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={resetForm}>
+                      Cancel
+                    </Button>
+                  </div>
+                </>
+              )}
             </Card>
           )}
+
+          {generatedReports.length ? (
+            <Card padding={14} tone="section">
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
+                <div>
+                  <Kicker>Generated reports</Kicker>
+                  <Body size="sm" style={{ color: brand.muted, marginTop: 4 }}>
+                    AI interpretive reports saved from the reports page. These are stored as generated reports, not uploaded files, so they do not enter extraction processing.
+                  </Body>
+                </div>
+                <Pill tone="neutral">{generatedReports.length}</Pill>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8 }}>
+                {generatedReports.map((report) => {
+                  const status = report.metadata?.status || "processing";
+                  return (
+                    <div key={report.id} style={{ border: `1px solid ${brand.border}`, borderRadius: radius.base, background: brand.white, padding: "10px 11px", display: "grid", gap: 8 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontFamily: fonts.sans, fontSize: 13, fontWeight: 650, color: brand.forest, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {report.title || "Generated report"}
+                          </div>
+                          <div style={{ fontFamily: fonts.mono, fontSize: 10, color: brand.muted, marginTop: 3 }}>
+                            {fmtDate(report.created_at)} · {report.metadata?.cadence || "report"}
+                          </div>
+                        </div>
+                        <Pill tone={status === "completed" ? "ok" : status === "failed" ? "danger" : "warn"}>{status === "completed" ? "Ready" : status}</Pill>
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <Button size="sm" variant="secondary" onClick={() => openGeneratedReport(report)} disabled={status !== "completed"} style={{ minHeight: 30, padding: "6px 10px" }}>
+                          Open
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => openGeneratedReport(report)} disabled={status !== "completed"} style={{ minHeight: 30, padding: "6px 10px" }}>
+                          Print / save
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          ) : null}
 
           {/* Filters */}
           <div className="tilth-docs-filters" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
@@ -1109,248 +1456,18 @@ export function DocumentsWorkspace({ farm, fields }) {
                   }
                 />
               ) : (
-                <Card padding={0}>
-                  <div style={{ overflowX: "auto" }}>
-                    <table
-                      style={{
-                        width: "100%",
-                        borderCollapse: "collapse",
-                        fontFamily: fonts.sans,
-                        fontSize: 12,
-                      }}
-                    >
-                      <thead>
-                        <tr>
-                          {["Title", "Category", "Filename", "Status", "Uploaded", "Doc date", "Expiry", "Field", "Tags", ""].map(
-                            (h) => (
-                              <th
-                                key={h}
-                                style={{
-                                  textAlign: "left",
-                                  padding: "8px 10px",
-                                  background: brand.bgSection,
-                                  fontFamily: fonts.mono,
-                                  fontSize: 9,
-                                  letterSpacing: "0.14em",
-                                  textTransform: "uppercase",
-                                  color: brand.muted,
-                                  fontWeight: 400,
-                                  borderBottom: `1px solid ${brand.border}`,
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {h}
-                              </th>
-                            )
-                          )}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filtered.map((d) => {
-                          const days = daysUntil(d.expiry);
-                          const tone = expiryTone(days);
-                          return (
-                            <tr key={d.id}>
-                              <td
-                                style={{
-                                  padding: "8px 10px",
-                                  borderBottom: `1px solid ${brand.border}`,
-                                  fontWeight: 600,
-                                  color: brand.forest,
-                                  maxWidth: 200,
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {d.title}
-                              </td>
-                              <td
-                                style={{
-                                  padding: "8px 10px",
-                                  borderBottom: `1px solid ${brand.border}`,
-                                }}
-                              >
-                                <Pill tone="neutral">{CATEGORY_LABELS[d.category] || d.category}</Pill>
-                              </td>
-                              <td
-                                style={{
-                                  padding: "8px 10px",
-                                  borderBottom: `1px solid ${brand.border}`,
-                                  fontFamily: fonts.mono,
-                                  fontSize: 11,
-                                  color: brand.bodySoft,
-                                  maxWidth: 160,
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {d.filename}
-                                {d.storagePath ? (
-                                  <span style={{ marginLeft: 6, color: brand.ok }}>uploaded</span>
-                                ) : null}
-                              </td>
-                              <td
-                                style={{
-                                  padding: "8px 10px",
-                                  borderBottom: `1px solid ${brand.border}`,
-                                  color: brand.bodySoft,
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                <Pill tone={d.status === "failed" ? "danger" : d.status === "completed" ? "ok" : "neutral"}>
-                                  {d.status || "uploaded"}
-                                </Pill>
-                              </td>
-                              <td
-                                style={{
-                                  padding: "8px 10px",
-                                  borderBottom: `1px solid ${brand.border}`,
-                                  color: brand.bodySoft,
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {fmtDate(d.uploadDate)}
-                              </td>
-                              <td
-                                style={{
-                                  padding: "8px 10px",
-                                  borderBottom: `1px solid ${brand.border}`,
-                                  color: brand.bodySoft,
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {d.documentDate ? fmtDate(d.documentDate) : <span style={{ color: brand.muted }}>—</span>}
-                              </td>
-                              <td
-                                style={{
-                                  padding: "8px 10px",
-                                  borderBottom: `1px solid ${brand.border}`,
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {d.expiry ? (
-                                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                                    <span style={{ color: brand.bodySoft }}>{fmtDate(d.expiry)}</span>
-                                    {tone && <Pill tone={tone}>{expiryLabel(days)}</Pill>}
-                                  </span>
-                                ) : (
-                                  <span style={{ color: brand.muted }}>—</span>
-                                )}
-                              </td>
-                              <td
-                                style={{
-                                  padding: "8px 10px",
-                                  borderBottom: `1px solid ${brand.border}`,
-                                  color: brand.bodySoft,
-                                  maxWidth: 120,
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {d.fieldId && fieldMap[d.fieldId]
-                                  ? fieldMap[d.fieldId]
-                                  : "—"}
-                              </td>
-                              <td
-                                style={{
-                                  padding: "8px 10px",
-                                  borderBottom: `1px solid ${brand.border}`,
-                                }}
-                              >
-                                <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
-                                  {(d.tags || []).map((tag) => (
-                                    <span
-                                      key={tag}
-                                      style={{
-                                        fontFamily: fonts.mono,
-                                        fontSize: 9,
-                                        padding: "2px 6px",
-                                        borderRadius: radius.base,
-                                        background: brand.bgSection,
-                                        border: `1px solid ${brand.border}`,
-                                        color: brand.forest,
-                                        whiteSpace: "nowrap",
-                                      }}
-                                    >
-                                      {tag}
-                                    </span>
-                                  ))}
-                                </div>
-                              </td>
-                              <td
-                                style={{
-                                  padding: "8px 10px",
-                                  borderBottom: `1px solid ${brand.border}`,
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                <div style={{ display: "flex", gap: 4 }}>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleEdit(d)}
-                                    style={{
-                                      fontFamily: fonts.mono,
-                                      fontSize: 10,
-                                      letterSpacing: "0.10em",
-                                      textTransform: "uppercase",
-                                      color: brand.forest,
-                                      background: "transparent",
-                                      border: `1px solid ${brand.border}`,
-                                      borderRadius: radius.base,
-                                      padding: "4px 8px",
-                                      cursor: "pointer",
-                                    }}
-                                  >
-                                    Edit
-                                  </button>
-                                  {d.storagePath ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => openDocument(d)}
-                                      style={{
-                                        fontFamily: fonts.mono,
-                                        fontSize: 10,
-                                        letterSpacing: "0.10em",
-                                        textTransform: "uppercase",
-                                        color: brand.info,
-                                        background: "transparent",
-                                        border: `1px solid ${brand.border}`,
-                                        borderRadius: radius.base,
-                                        padding: "4px 8px",
-                                        cursor: "pointer",
-                                      }}
-                                    >
-                                      Open
-                                    </button>
-                                  ) : null}
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDelete(d.id)}
-                                    style={{
-                                      fontFamily: fonts.mono,
-                                      fontSize: 10,
-                                      color: brand.danger,
-                                      background: "transparent",
-                                      border: `1px solid ${brand.border}`,
-                                      borderRadius: radius.base,
-                                      padding: "4px 8px",
-                                      cursor: "pointer",
-                                    }}
-                                  >
-                                    ×
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </Card>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {filtered.map((d) => (
+                    <DocumentCard
+                      key={d.id}
+                      doc={d}
+                      fieldName={d.fieldId ? fieldMap[d.fieldId] : ""}
+                      onOpen={openDocument}
+                      onEdit={handleEdit}
+                      onDelete={handleDelete}
+                    />
+                  ))}
+                </div>
               )}
             </>
           )}
@@ -1447,7 +1564,7 @@ export function DocumentsWorkspace({ farm, fields }) {
           }}
         >
           {/* Suggested actions */}
-          <Card padding={12} tone={suggestedActions.length ? "section" : undefined}>
+          <Card padding={12} tone={visibleSuggestedActions.length ? "section" : undefined}>
             <div
               style={{
                 display: "flex",
@@ -1458,15 +1575,15 @@ export function DocumentsWorkspace({ farm, fields }) {
               }}
             >
               <Kicker>Assistant actions</Kicker>
-              {suggestedActions.length ? <Pill tone="warn">{suggestedActions.length} pending</Pill> : null}
+              {visibleSuggestedActions.length ? <Pill tone="warn">{visibleSuggestedActions.length} pending</Pill> : null}
             </div>
-            {suggestedActions.length === 0 ? (
+            {visibleSuggestedActions.length === 0 ? (
               <Body size="sm" style={{ color: brand.muted }}>
                 Uploads will appear here when Tilth finds calendar, finance, inventory or records actions to confirm.
               </Body>
             ) : (
               <div style={{ display: "grid", gap: 8 }}>
-                {suggestedActions.slice(0, 5).map((action) => {
+                {visibleSuggestedActions.slice(0, 5).map((action) => {
                   const payload = action.payload || {};
                   return (
                     <div
@@ -1871,6 +1988,26 @@ export function DocumentsWorkspace({ farm, fields }) {
             flex: 0 0 auto;
             min-height: 40px !important;
             border-radius: 8px !important;
+          }
+          .tilth-doc-card {
+            min-width: 0 !important;
+          }
+          .tilth-doc-card-head {
+            display: grid !important;
+            grid-template-columns: 1fr !important;
+            gap: 8px !important;
+          }
+          .tilth-doc-card-filename {
+            white-space: normal !important;
+            overflow-wrap: anywhere !important;
+          }
+          .tilth-doc-card-actions {
+            display: grid !important;
+            grid-template-columns: 1fr !important;
+          }
+          .tilth-doc-card-actions button {
+            width: 100% !important;
+            margin-left: 0 !important;
           }
         }
         @media (max-width: 420px) {

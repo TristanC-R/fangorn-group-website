@@ -57,6 +57,13 @@ ALLOWED_CATEGORIES = {
     "general",
 }
 
+ALLOWED_ACTION_TYPES = {
+    "calendar_reminder",
+    "finance_transaction",
+    "inventory_item",
+    "spray_record",
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -299,6 +306,78 @@ def quantity_and_unit(text: str) -> tuple[float, str] | tuple[None, str]:
     return float(match.group(1)), unit
 
 
+def is_spray_application_document(text: str, details: dict[str, Any]) -> bool:
+    sample = (text or "").lower()
+    category = str(details.get("category") or "").lower()
+    if category in {"spray_test", "nptc"}:
+        return False
+    has_application_language = re.search(
+        r"\b(spray(?:ed)?|application|applied|herbicide|fungicide|insecticide)\b",
+        sample,
+    )
+    has_record_evidence = re.search(
+        r"\b(field|operator|rate|l/ha|litres?/ha|product|mapp|boom|nozzle|water volume|weather|wind)\b",
+        sample,
+    )
+    has_person_document_markers = re.search(
+        r"\b(cv|curriculum vitae|resume|employment|education|experience|skills|phd|researcher)\b",
+        sample,
+    )
+    return bool(has_application_language and has_record_evidence and not has_person_document_markers)
+
+
+def infer_document_actions_with_llm(text: str, document: dict[str, Any], details: dict[str, Any]) -> list[dict[str, Any]] | None:
+    if not OPENAI_API_KEY:
+        return None
+    sample = (text or "")[:6000]
+    if not sample.strip():
+        return []
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=os.getenv("DOCUMENT_VAULT_CHAT_MODEL", "gpt-4o-mini"),
+            temperature=0.05,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You create context-aware suggested actions from farm documents. "
+                        "Return strict JSON: {\"actions\": [...]}. Return [] when the document is informational, "
+                        "a CV/resume, correspondence with no operational obligation, or evidence is insufficient. "
+                        "Allowed action_type values: calendar_reminder, finance_transaction, inventory_item, spray_record. "
+                        "Only create spray_record when the document is an actual spray/application/work record with evidence "
+                        "such as field, product, rate, operator, date, MAPP, water volume or weather. Do not create spray_record "
+                        "from CVs, qualifications, certificates, product marketing, general agricultural text, or future recommendations. "
+                        "Only create finance_transaction for invoices/receipts with money evidence. "
+                        "Only create inventory_item for purchased/stored stock with product and quantity evidence. "
+                        "Only create calendar_reminder for explicit due, expiry, renewal, deadline or payment dates."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "filename": document.get("filename"),
+                            "title": document.get("title"),
+                            "extracted_details": details,
+                            "document_text_sample": sample,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        )
+        parsed = json.loads(response.choices[0].message.content or "{}")
+        actions = parsed.get("actions")
+        return actions if isinstance(actions, list) else []
+    except Exception as exc:
+        print(f"LLM document action inference failed for {document.get('id')}: {exc}")
+        return None
+
+
 def infer_document_actions(text: str, document: dict[str, Any], details: dict[str, Any]) -> list[dict[str, Any]]:
     sample = text or ""
     lowered = sample.lower()
@@ -315,7 +394,11 @@ def infer_document_actions(text: str, document: dict[str, Any], details: dict[st
     vat_amount = details.get("vat_amount") if isinstance(details.get("vat_amount"), (int, float)) else 0
     suggestions: list[dict[str, Any]] = []
 
-    def add(action_type: str, action_title: str, summary: str, payload: dict[str, Any], confidence: float):
+    def add(action_type: str, action_title: str, summary: str, payload: dict[str, Any], confidence: float, method: str = "worker-regex-v1"):
+        if action_type not in ALLOWED_ACTION_TYPES:
+            return
+        if action_type == "spray_record" and not is_spray_application_document(sample, details):
+            return
         suggestions.append(
             {
                 "farm_id": farm_id,
@@ -331,11 +414,27 @@ def infer_document_actions(text: str, document: dict[str, Any], details: dict[st
                     "sourceKey": payload.get("sourceKey") or f"document:{document_id}:{action_type}",
                 },
                 "metadata": {
-                    "method": "worker-regex-v1",
+                    "method": method,
                     "document_category": category,
                 },
             }
         )
+
+    llm_actions = infer_document_actions_with_llm(sample, document, details)
+    if llm_actions is not None:
+        for action in llm_actions[:6]:
+            if not isinstance(action, dict):
+                continue
+            payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+            add(
+                str(action.get("action_type") or ""),
+                str(action.get("title") or title),
+                str(action.get("summary") or ""),
+                payload,
+                float(action.get("confidence") or 0.65),
+                "openai-context-v1",
+            )
+        return suggestions[:6]
 
     if category in {"invoice", "receipt"} or re.search(r"\binvoice\b|\breceipt\b", lowered):
         if total_amount is not None:
@@ -410,7 +509,7 @@ def infer_document_actions(text: str, document: dict[str, Any], details: dict[st
             0.66,
         )
 
-    if re.search(r"\b(spray|sprayed|application|applied|herbicide|fungicide|insecticide)\b", lowered):
+    if is_spray_application_document(sample, details):
         action_date = first_date(sample) or datetime.now(timezone.utc).date().isoformat()
         add(
             "spray_record",

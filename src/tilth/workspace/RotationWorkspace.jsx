@@ -503,6 +503,7 @@ function InlineForm({ entry, year, season, onSave, onDelete, onClose }) {
   return (
     <div
       ref={ref}
+      className="tilth-rotation-inline-form tilth-scroll"
       style={{
         position: "absolute",
         top: "100%",
@@ -855,6 +856,7 @@ function SummaryPanel({ rotations, fields, warnings }) {
 
   return (
     <div
+      className="tilth-rotation-summary tilth-scroll"
       style={{
         width: 280,
         minWidth: 280,
@@ -1137,9 +1139,10 @@ export function RotationWorkspace({ farm, fields }) {
         />
       }
     >
-      <div style={{ display: "flex", flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}>
+      <div className="tilth-rotation-layout" style={{ display: "flex", flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}>
         {/* gantt grid */}
         <div
+          className="tilth-rotation-grid"
           style={{
             flex: "1 1 auto",
             minWidth: 0,
@@ -1154,6 +1157,7 @@ export function RotationWorkspace({ farm, fields }) {
             <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 10, background: brand.bgCard }}>
               {/* field label column header */}
               <div
+                className="tilth-rotation-field-header"
                 style={{
                   width: FIELD_COL,
                   minWidth: FIELD_COL,
@@ -1177,6 +1181,7 @@ export function RotationWorkspace({ farm, fields }) {
               {YEARS.map((yr) => (
                 <div key={yr} style={{ display: "flex", flexDirection: "column" }}>
                   <div
+                    className="tilth-rotation-year-header"
                     style={{
                       display: "flex",
                       justifyContent: "center",
@@ -1196,6 +1201,7 @@ export function RotationWorkspace({ farm, fields }) {
                   <div style={{ display: "flex" }}>
                     {SEASONS.map((s) => (
                       <div
+                        className="tilth-rotation-season-header"
                         key={s}
                         style={{
                           width: CELL_W,
@@ -1234,6 +1240,7 @@ export function RotationWorkspace({ farm, fields }) {
                 >
                   {/* field label */}
                   <div
+                    className="tilth-rotation-field-label"
                     style={{
                       width: FIELD_COL,
                       minWidth: FIELD_COL,
@@ -1287,7 +1294,8 @@ export function RotationWorkspace({ farm, fields }) {
                       const editing = isEditing(fid, yr, s);
 
                       return (
-                        <div
+                          <div
+                            className="tilth-rotation-season-cell"
                           key={`${yr}-${s}`}
                           style={{
                             width: CELL_W,
@@ -1340,6 +1348,65 @@ export function RotationWorkspace({ farm, fields }) {
         {/* summary sidebar */}
         <SummaryPanel rotations={merged} fields={fields} warnings={warnings} />
       </div>
+      <style>{`
+        @media (max-width: 760px) {
+          .tilth-rotation-layout {
+            flex-direction: column !important;
+            overflow-y: auto !important;
+            gap: 12px !important;
+            padding-bottom: 18px !important;
+          }
+          .tilth-rotation-grid {
+            flex: 0 0 auto !important;
+            max-height: 56dvh !important;
+            min-height: 320px !important;
+          }
+          .tilth-rotation-field-header,
+          .tilth-rotation-field-label {
+            width: 104px !important;
+            min-width: 104px !important;
+            padding-left: 8px !important;
+            padding-right: 8px !important;
+          }
+          .tilth-rotation-field-label > div:first-child {
+            font-size: 11px !important;
+          }
+          .tilth-rotation-season-cell {
+            width: 86px !important;
+            min-width: 86px !important;
+          }
+          .tilth-rotation-year-header {
+            width: 258px !important;
+          }
+          .tilth-rotation-season-header {
+            width: 86px !important;
+          }
+          .tilth-rotation-summary {
+            width: 100% !important;
+            min-width: 0 !important;
+            height: auto !important;
+            overflow: visible !important;
+            border-left: 0 !important;
+            border-top: 1px solid ${brand.border} !important;
+            padding: 14px 4px 0 !important;
+          }
+          .tilth-rotation-inline-form {
+            position: fixed !important;
+            left: max(10px, env(safe-area-inset-left, 0px)) !important;
+            right: max(10px, env(safe-area-inset-right, 0px)) !important;
+            bottom: max(10px, env(safe-area-inset-bottom, 0px)) !important;
+            top: auto !important;
+            transform: none !important;
+            z-index: 2400 !important;
+            width: auto !important;
+            max-width: none !important;
+            max-height: min(84dvh, 720px) !important;
+            overflow-y: auto !important;
+            border-radius: 16px 16px 8px 8px !important;
+            box-shadow: 0 -18px 70px rgba(14,42,36,0.22) !important;
+          }
+        }
+      `}</style>
     </WorkspaceFrame>
   );
 }

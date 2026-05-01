@@ -142,9 +142,9 @@ export const SECTIONS = {
   },
   sensing: {
     id: "sensing",
-    label: "Satellite maps",
-    kicker: "Satellite",
-    blurb: "Field condition maps and terrain data.",
+    label: "Satellite insights",
+    kicker: "Remote sensing",
+    blurb: "Sentinel field condition insights.",
   },
   soil: {
     id: "soil",

@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { brand, fonts } from "../ui/theme.js";
 import { SatelliteWorkspace } from "./SatelliteWorkspace.jsx";
 import { SarWorkspace } from "./SarWorkspace.jsx";
 import { TopographyWorkspace } from "./TopographyWorkspace.jsx";
+import { useMediaQuery } from "../ui/mobileUx.js";
 
 const TABS = [
-  { id: "ndvi", label: "NDVI", sub: "Sentinel-2 optical" },
+  { id: "ndvi", label: "Optical insights", sub: "Sentinel-2" },
   { id: "radar", label: "Radar", sub: "Sentinel-1 SAR" },
   { id: "terrain", label: "Terrain", sub: "Copernicus DEM 30 m" },
 ];
@@ -20,6 +21,12 @@ const panelStyle = (visible) => ({
 
 export function RemoteSensingWorkspace({ farm, fields }) {
   const [tab, setTab] = useState("ndvi");
+  const mobile = useMediaQuery("(max-width: 760px)");
+  const visibleTabs = mobile ? TABS.filter((t) => t.id === "ndvi") : TABS;
+
+  useEffect(() => {
+    if (mobile && tab !== "ndvi") setTab("ndvi");
+  }, [mobile, tab]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
@@ -31,7 +38,7 @@ export function RemoteSensingWorkspace({ farm, fields }) {
         padding: "0 16px",
         flex: "0 0 auto",
       }}>
-        {TABS.map(t => (
+        {visibleTabs.map(t => (
           <button
             key={t.id}
             type="button"
@@ -68,12 +75,12 @@ export function RemoteSensingWorkspace({ farm, fields }) {
       <div style={panelStyle(tab === "ndvi")}>
         <SatelliteWorkspace farm={farm} fields={fields} />
       </div>
-      <div style={panelStyle(tab === "radar")}>
+      {!mobile && <div style={panelStyle(tab === "radar")}>
         <SarWorkspace farm={farm} fields={fields} />
-      </div>
-      <div style={panelStyle(tab === "terrain")}>
+      </div>}
+      {!mobile && <div style={panelStyle(tab === "terrain")}>
         <TopographyWorkspace farm={farm} fields={fields} />
-      </div>
+      </div>}
     </div>
   );
 }

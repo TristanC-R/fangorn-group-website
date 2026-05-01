@@ -215,6 +215,7 @@ export function FieldMapThree2D({
   choropleth = null,
   pointMarkers = [],
   overlays = null,
+  suppressFieldFill = false,
   controls = true,
   uiInsets = {},
   height = "100%",
@@ -252,6 +253,7 @@ export function FieldMapThree2D({
   const choroplethRef = useRef(choropleth);
   const pointMarkersRef = useRef(pointMarkers);
   const overlaysRef = useRef(overlays);
+  const suppressFieldFillRef = useRef(suppressFieldFill);
   const hoverEnabledRef = useRef(hoverEnabled);
   const hoverIdRef = useRef(hoverId);
   const editRingRef = useRef(editRing);
@@ -269,6 +271,7 @@ export function FieldMapThree2D({
   choroplethRef.current = choropleth;
   pointMarkersRef.current = pointMarkers;
   overlaysRef.current = overlays;
+  suppressFieldFillRef.current = suppressFieldFill;
   hoverEnabledRef.current = hoverEnabled;
   hoverIdRef.current = hoverId;
   editRingRef.current = editRing;
@@ -992,7 +995,9 @@ export function FieldMapThree2D({
       const cx = (tMinX + tMaxX) / 2;
       const cy = (tMinY + tMaxY) / 2;
 
-      const sf = savedRef.current || [];
+      const sf = Array.isArray(state.def.clipFields) && state.def.clipFields.length
+        ? state.def.clipFields
+        : savedRef.current || [];
       const shapes = [];
       for (const f of sf) {
         if (!f || !Array.isArray(f.boundary) || f.boundary.length < 3) continue;
@@ -1576,6 +1581,7 @@ export function FieldMapThree2D({
       const markers = Array.isArray(pointMarkersRef.current) ? pointMarkersRef.current : [];
       const editing = editingFieldIdRef.current;
       const editRingLocal = editRingRef.current;
+      const suppressFill = suppressFieldFillRef.current;
 
       for (const f of sf) {
         if (!isWgsRing(f.boundary) || f.boundary.length < 3) continue;
@@ -1594,13 +1600,15 @@ export function FieldMapThree2D({
             : isHover
               ? new THREE.Color(0x649a5c)
               : new THREE.Color(0x104e3f);
-        const fillOpacity = override
-          ? 0.55
-          : isSelected
-            ? 0.28
-            : isHover
-              ? 0.2
-              : 0.06;
+        const fillOpacity = suppressFill
+          ? 0
+          : override
+            ? 0.55
+            : isSelected
+              ? 0.28
+              : isHover
+                ? 0.2
+                : 0.06;
 
         const built = buildRingFillMesh(f.boundary, 0.08, fillColor, fillOpacity);
         if (built) {
@@ -1630,7 +1638,7 @@ export function FieldMapThree2D({
 
       if (markers.length) {
         const mpp = (TWO_PI_R * Math.cos((view.lat * Math.PI) / 180)) / (256 * 2 ** viewZoom);
-        const dotRadiusM = Math.max(mpp * 9, 1.4);
+        const dotRadiusM = Math.max(mpp * 5, 1.1);
         const ringRadiusM = dotRadiusM * 1.6;
         const dotGeom = new THREE.CircleGeometry(dotRadiusM, 32);
         dotGeom.rotateX(-Math.PI / 2);
@@ -2285,7 +2293,7 @@ export function FieldMapThree2D({
     // Cosmetic-only changes (selection / hover / choropleth) don't perturb
     // `fieldsClipSignature` so this is a cheap no-op in that case.
     ctxRef.current?.refreshOverlayTiles?.();
-  }, [savedFields, draftRing, selectedFieldId, choropleth, pointMarkers, editRing, editingFieldId]);
+  }, [savedFields, draftRing, selectedFieldId, choropleth, pointMarkers, overlays, suppressFieldFill, editRing, editingFieldId]);
 
   useEffect(() => {
     ctxRef.current?.reconcileOverlays?.(overlays);

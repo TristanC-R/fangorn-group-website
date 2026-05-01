@@ -86,6 +86,7 @@ export function WorkspaceHome({ farm, fields, onNavigate, onMapFields }) {
   const attention = useMemo(() => {
     let critical = 0, warn = 0, healthy = 0, mostRecent = 0;
     const flagged = [];
+    const signalCounts = { moisture: 0, chlorophyll: 0, canopy: 0, disturbance: 0 };
     for (const [fieldId, rec] of health) {
       if (!rec) continue;
       const tone = scoreTone(rec.score);
@@ -97,9 +98,13 @@ export function WorkspaceHome({ farm, fields, onNavigate, onMapFields }) {
       if (tone === "danger" || tone === "warn") {
         flagged.push({ fieldId, name: fieldsById.get(fieldId)?.name || "Unnamed", rec });
       }
+      if (rec.flags?.includes("water_stress") || rec.flags?.includes("moisture_decline") || rec.flags?.includes("surface_wetness")) signalCounts.moisture += 1;
+      if (rec.flags?.includes("chlorophyll_stress")) signalCounts.chlorophyll += 1;
+      if (rec.flags?.includes("thin_canopy") || rec.flags?.includes("dense_canopy_decline")) signalCounts.canopy += 1;
+      if (rec.flags?.includes("disturbance_or_exposed_soil")) signalCounts.disturbance += 1;
     }
     flagged.sort((a, b) => (a.rec?.score ?? 99) - (b.rec?.score ?? 99));
-    return { critical, warn, healthy, total: health.size, mostRecent, flagged };
+    return { critical, warn, healthy, total: health.size, mostRecent, flagged, signalCounts };
   }, [health, fieldsById]);
 
   // Upcoming crop events (stage transitions, harvest, N timing)
@@ -337,6 +342,18 @@ export function WorkspaceHome({ farm, fields, onNavigate, onMapFields }) {
             <Stat kicker="Last scene" value={recentlyLabel || "—"} sub="Satellite" />
           </div>
         </div>
+
+        {attention.total > 0 ? (
+          <Card padding={10} tone="section" style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+              <Kicker style={{ marginRight: 4 }}>Spectral signals</Kicker>
+              <Pill tone={attention.signalCounts.moisture ? "warn" : "neutral"}>Moisture {attention.signalCounts.moisture}</Pill>
+              <Pill tone={attention.signalCounts.chlorophyll ? "warn" : "neutral"}>Chlorophyll/N {attention.signalCounts.chlorophyll}</Pill>
+              <Pill tone={attention.signalCounts.canopy ? "warn" : "neutral"}>Canopy {attention.signalCounts.canopy}</Pill>
+              <Pill tone={attention.signalCounts.disturbance ? "warn" : "neutral"}>NBR context {attention.signalCounts.disturbance}</Pill>
+            </div>
+          </Card>
+        ) : null}
 
         {/* Main grid */}
         <div className="tilth-home-grid" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.6fr) minmax(0, 1fr)", gap: 14, alignItems: "start" }}>

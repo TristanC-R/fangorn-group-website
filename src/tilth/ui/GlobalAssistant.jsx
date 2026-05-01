@@ -65,6 +65,32 @@ function sourceLabel(source) {
   return source.type || "Source";
 }
 
+function assistantText(value) {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  if (Array.isArray(value)) {
+    return value.map(assistantText).filter(Boolean).join("\n");
+  }
+  if (typeof value === "object") {
+    const nested = value.content ?? value.answer ?? value.report ?? value.summary ?? value.text ?? value.message;
+    if (nested != null) return assistantText(nested);
+    return JSON.stringify(value, null, 2);
+  }
+  return String(value);
+}
+
+function assistantDisplayText(value, role = "assistant") {
+  const text = assistantText(value);
+  if (role === "user" && /Field data summary JSON:/i.test(text)) {
+    const match = text.match(/Produce a short crop-health report for "([^"]+)"/i);
+    return match?.[1] ? `Interpret crop health for ${match[1]}` : "Interpret crop health for this field";
+  }
+  if (text === "[object Object]") {
+    return "The assistant returned a structured response that could not be displayed. Please ask again to regenerate the report.";
+  }
+  return text;
+}
+
 function assistantErrorMessage(err, fallback = "The assistant could not finish that request.") {
   const raw = err?.message || String(err || "");
   if (/not configured|tilth api|supabase|npm run|failed to fetch|networkerror|load failed/i.test(raw)) {
@@ -168,7 +194,7 @@ export function GlobalAssistant({ farm }) {
         setMessages((rows || []).map((row) => ({
           id: row.id,
           role: row.role,
-          content: row.content,
+          content: assistantDisplayText(row.content, row.role),
           sources: row.sources || [],
           suggestedActions: row.suggested_actions || [],
         })));
@@ -213,24 +239,33 @@ export function GlobalAssistant({ farm }) {
     };
   }, [farmId, open]);
 
-  const send = async () => {
-    const text = message.trim() || (mode === "report" ? REPORT_TYPES.find(([id]) => id === reportType)?.[1] : "");
+  const send = async (override = null) => {
+    const overrideText = typeof override?.message === "string" ? override.message.trim() : "";
+    const text = overrideText || message.trim() || (mode === "report" ? REPORT_TYPES.find(([id]) => id === reportType)?.[1] : "");
     if (!text || !farmId || busy) return;
-    setMessage("");
+    if (!overrideText) setMessage("");
+    const requestMode = override?.mode || mode;
+    const visibleText = assistantDisplayText(
+      override?.displayMessage || (requestMode === "report" ? `Generate report: ${text}` : text),
+      "user"
+    );
     setBusy(true);
     setError("");
-    setMessages((prev) => [...prev, { id: uid(), role: "user", content: mode === "report" ? `Generate report: ${text}` : text, sources: [] }]);
+    setOpen(true);
+    setMode(requestMode);
+    setMessages((prev) => [...prev, { id: uid(), role: "user", content: visibleText, sources: [] }]);
     try {
-      const payload = mode === "report"
+      const payload = requestMode === "report"
         ? await apiFetch("/api/platform-assistant/reports/generate", {
             prompt: text,
-            reportType,
-            scope: "auto",
+            reportType: override?.reportType || reportType,
+            scope: override?.scope || "auto",
           })
         : await apiFetch("/api/platform-assistant/chat", {
             message: text,
             chatSessionId: sessionId,
-            scope: "auto",
+            scope: override?.scope || "auto",
+            allowActions: override?.allowActions !== false,
           });
       if (payload.chatSessionId) setSessionId(payload.chatSessionId);
       if (payload.suggestedActions?.length) {
@@ -244,7 +279,7 @@ export function GlobalAssistant({ farm }) {
         {
           id: uid(),
           role: "assistant",
-          content: payload.answer || payload.report?.content || "[Information not found in Tilth]",
+          content: assistantDisplayText(payload.answer || payload.report?.content, "assistant") || "[Information not found in Tilth]",
           sources: payload.sources || payload.report?.sources || [],
           suggestedActions: payload.suggestedActions || [],
         },
@@ -257,6 +292,23 @@ export function GlobalAssistant({ farm }) {
       setBusy(false);
     }
   };
+
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event.detail || {};
+      if (!detail.message) return;
+      send({
+        message: detail.message,
+        displayMessage: detail.displayMessage,
+        scope: detail.scope || "auto",
+        mode: detail.mode || "chat",
+        allowActions: detail.allowActions !== false,
+      });
+    };
+    window.addEventListener("tilth:assistant-request", handler);
+    return () => window.removeEventListener("tilth:assistant-request", handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [farmId, busy, sessionId, mode, reportType]);
 
   const openSource = async (source) => {
     if (!source || !supabase) return;
@@ -492,7 +544,7 @@ export function GlobalAssistant({ farm }) {
         style={{
           position: "fixed",
           right: 18,
-          bottom: 18,
+          bottom: "max(18px, env(safe-area-inset-bottom, 0px))",
           zIndex: 80,
           border: `1px solid ${brand.forest}`,
           background: brand.forest,
@@ -514,10 +566,10 @@ export function GlobalAssistant({ farm }) {
           style={{
             position: "fixed",
             right: 18,
-            bottom: 68,
+            bottom: "calc(68px + env(safe-area-inset-bottom, 0px))",
             zIndex: 80,
             width: "min(520px, calc(100vw - 28px))",
-            maxHeight: "min(720px, calc(100vh - 92px))",
+            maxHeight: "min(720px, calc(100dvh - 92px - env(safe-area-inset-bottom, 0px)))",
             display: "flex",
             flexDirection: "column",
             border: `1px solid ${brand.border}`,
@@ -557,7 +609,7 @@ export function GlobalAssistant({ farm }) {
             {messages.length === 0 ? <div style={{ color: brand.muted, fontFamily: fonts.sans, fontSize: 13, lineHeight: 1.45 }}>{emptyText}</div> : null}
             {messages.map((msg) => (
               <div key={msg.id} style={{ justifySelf: msg.role === "user" ? "end" : "start", maxWidth: "92%", border: `1px solid ${msg.error ? brand.danger : brand.border}`, borderRadius: radius.base, background: msg.role === "user" ? brand.forest : brand.bgSection, color: msg.role === "user" ? brand.white : msg.error ? brand.danger : brand.body, padding: "8px 10px", fontFamily: fonts.sans, fontSize: 13, lineHeight: 1.45, whiteSpace: "pre-wrap" }}>
-                {msg.content}
+                {assistantDisplayText(msg.content, msg.role)}
                 {msg.sources?.length ? (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 }}>
                     {msg.sources.slice(0, 8).map((source) => (

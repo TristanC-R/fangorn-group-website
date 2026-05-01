@@ -95,7 +95,7 @@ function LoggedOutShell({ children }) {
   return (
     <div
       style={{
-        minHeight: "100vh",
+        minHeight: "100dvh",
         background: brand.white,
         color: brand.body,
         display: "flex",

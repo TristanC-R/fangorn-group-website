@@ -96,6 +96,62 @@ const NDVI_EXPRESSION_RAW = "(B08-B04)/(B08+B04)";
 const NDVI_DEFAULT_RESCALE = "0.0,0.9";
 const NDVI_DEFAULT_COLORMAP = "rdylgn";
 
+const SPECTRAL_TILE_CONFIG = {
+  ndvi: {
+    assets: ["B04", "B08"],
+    expressionMasked: NDVI_EXPRESSION_MASKED,
+    expressionRaw: NDVI_EXPRESSION_RAW,
+    rescale: NDVI_DEFAULT_RESCALE,
+    colormap: NDVI_DEFAULT_COLORMAP,
+  },
+  evi: {
+    assets: ["B02", "B04", "B08"],
+    expressionMasked: "where((SCL==4)|(SCL==5),2.5*(B08-B04)/(B08+6*B04-7.5*B02+10000)," + NDVI_NODATA_SENTINEL + ")",
+    expressionRaw: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+10000)",
+    rescale: "0.0,0.8",
+    colormap: "rdylgn",
+  },
+  ndwi: {
+    assets: ["B03", "B08"],
+    expressionMasked: "where((SCL==4)|(SCL==5),(B03-B08)/(B03+B08)," + NDVI_NODATA_SENTINEL + ")",
+    expressionRaw: "(B03-B08)/(B03+B08)",
+    rescale: "-0.6,0.5",
+    colormap: "brbg",
+  },
+  ndmi: {
+    assets: ["B08", "B11"],
+    expressionMasked: "where((SCL==4)|(SCL==5),(B08-B11)/(B08+B11)," + NDVI_NODATA_SENTINEL + ")",
+    expressionRaw: "(B08-B11)/(B08+B11)",
+    rescale: "-0.5,0.6",
+    colormap: "brbg",
+  },
+  ndre: {
+    assets: ["B05", "B8A"],
+    expressionMasked: "where((SCL==4)|(SCL==5),(B8A-B05)/(B8A+B05)," + NDVI_NODATA_SENTINEL + ")",
+    expressionRaw: "(B8A-B05)/(B8A+B05)",
+    rescale: "0.0,0.55",
+    colormap: "rdylgn",
+  },
+  savi: {
+    assets: ["B04", "B08"],
+    expressionMasked: "where((SCL==4)|(SCL==5),1.5*(B08-B04)/(B08+B04+5000)," + NDVI_NODATA_SENTINEL + ")",
+    expressionRaw: "1.5*(B08-B04)/(B08+B04+5000)",
+    rescale: "0.0,0.8",
+    colormap: "rdylgn",
+  },
+  nbr: {
+    assets: ["B08", "B12"],
+    expressionMasked: "where((SCL==4)|(SCL==5),(B08-B12)/(B08+B12)," + NDVI_NODATA_SENTINEL + ")",
+    expressionRaw: "(B08-B12)/(B08+B12)",
+    rescale: "-0.2,0.8",
+    colormap: "rdylgn",
+  },
+};
+
+function spectralTileConfig(index) {
+  return SPECTRAL_TILE_CONFIG[String(index || "ndvi").toLowerCase()] || SPECTRAL_TILE_CONFIG.ndvi;
+}
+
 function authHeaders(extra) {
   const h = {
     Accept: "application/json",
@@ -427,11 +483,27 @@ function multiIndexFromNumpyBuffer(buf) {
   if (!shapeMatch || !dtypeMatch) return null;
 
   const dtype = dtypeMatch[1];
-  const isFloat32 = dtype === "<f4" || dtype === "float32";
-  const isFloat64 = dtype === "<f8" || dtype === "float64";
-  if (!isFloat32 && !isFloat64) return null;
-  const bytesPerElem = isFloat32 ? 4 : 8;
-  const readFn = isFloat32 ? (o) => buf.readFloatLE(o) : (o) => buf.readDoubleLE(o);
+  const littleEndian = dtype.startsWith("<") || dtype.startsWith("|");
+  const kind = dtype.replace(/[<>=|]/g, "").slice(0, 1);
+  const byteSize = Number(dtype.match(/(\d+)$/)?.[1] || 0);
+  const bytesPerElem = byteSize || (dtype === "float32" ? 4 : dtype === "float64" ? 8 : 0);
+  if (![1, 2, 4, 8].includes(bytesPerElem)) return null;
+  const readFn = (() => {
+    if (dtype === "float32" || dtype.endsWith("f4")) return (o) => buf.readFloatLE(o);
+    if (dtype === "float64" || dtype.endsWith("f8")) return (o) => buf.readDoubleLE(o);
+    if (kind === "u") {
+      if (bytesPerElem === 1) return (o) => buf.readUInt8(o);
+      if (bytesPerElem === 2) return (o) => littleEndian ? buf.readUInt16LE(o) : buf.readUInt16BE(o);
+      if (bytesPerElem === 4) return (o) => littleEndian ? buf.readUInt32LE(o) : buf.readUInt32BE(o);
+    }
+    if (kind === "i") {
+      if (bytesPerElem === 1) return (o) => buf.readInt8(o);
+      if (bytesPerElem === 2) return (o) => littleEndian ? buf.readInt16LE(o) : buf.readInt16BE(o);
+      if (bytesPerElem === 4) return (o) => littleEndian ? buf.readInt32LE(o) : buf.readInt32BE(o);
+    }
+    return null;
+  })();
+  if (!readFn) return null;
 
   const dims = shapeMatch[1].split(",").map((s) => parseInt(s.trim(), 10));
   let bands, h, w;
@@ -568,35 +640,39 @@ function multiIndexFromNumpyBuffer(buf) {
  *          the bytes to the browser, so we don't need to bake a SAS
  *          token into anything client-side.
  */
-export function buildNdviTileUrl({ collection, itemId, z, x, y, opts = {} }) {
+export function buildSpectralIndexTileUrl({ collection, itemId, z, x, y, index = "ndvi", opts = {} }) {
   if (!collection || !itemId) {
-    throw new Error("buildNdviTileUrl: collection + itemId required");
+    throw new Error("buildSpectralIndexTileUrl: collection + itemId required");
   }
   if (!Number.isFinite(z) || !Number.isFinite(x) || !Number.isFinite(y)) {
-    throw new Error("buildNdviTileUrl: invalid z/x/y");
+    throw new Error("buildSpectralIndexTileUrl: invalid z/x/y");
   }
+  const cfg = spectralTileConfig(index);
   const applySclMask = opts.applySclMask !== false;
   const params = new URLSearchParams();
   params.set("collection", collection);
   params.set("item", itemId);
-  params.append("assets", "B04");
-  params.append("assets", "B08");
+  for (const asset of cfg.assets) params.append("assets", asset);
   if (applySclMask) {
     params.append("assets", "SCL");
-    params.set("expression", opts.expression || NDVI_EXPRESSION_MASKED);
+    params.set("expression", opts.expression || cfg.expressionMasked);
     // `nodata` parameter deliberately omitted: MPC's titiler (as of
     // Apr 2026) returns 500 Internal Server Error for all 2025+
     // Sentinel-2 items when `nodata=-9999` is present. Without it,
     // masked pixels (-9999) fall outside the rescale range and render
     // transparent via the colormap — visually identical.
   } else {
-    params.set("expression", opts.expression || NDVI_EXPRESSION_RAW);
+    params.set("expression", opts.expression || cfg.expressionRaw);
   }
   params.set("asset_as_band", "true");
-  params.set("rescale", opts.rescale || NDVI_DEFAULT_RESCALE);
-  params.set("colormap_name", opts.colormap || NDVI_DEFAULT_COLORMAP);
+  params.set("rescale", opts.rescale || cfg.rescale);
+  params.set("colormap_name", opts.colormap || cfg.colormap);
   params.set("resampling", opts.resampling || "bilinear");
   return `${DATA_API}/item/tiles/WebMercatorQuad/${z}/${x}/${y}@1x.png?${params.toString()}`;
+}
+
+export function buildNdviTileUrl(args) {
+  return buildSpectralIndexTileUrl({ ...args, index: "ndvi" });
 }
 
 /** Build an MPC titiler tile URL for true-colour Sentinel-2 visualisation. */
@@ -631,6 +707,7 @@ export const ndviRender = {
   expressionMasked: NDVI_EXPRESSION_MASKED,
   expressionRaw: NDVI_EXPRESSION_RAW,
   nodataSentinel: NDVI_NODATA_SENTINEL,
+  spectralTileConfig,
 };
 
 export function mpcConfigSummary() {

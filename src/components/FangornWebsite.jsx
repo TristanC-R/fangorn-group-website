@@ -134,6 +134,7 @@ export default function FangornWebsite() {
   const [contactSubmitting, setContactSubmitting] = useState(false);
   const fileInputRef = useRef(null);
   const gotchaRef = useRef(null);
+  const lastOverlayFocusRef = useRef(null);
   const [authUser, setAuthUser] = useState(null);
   const [authMode, setAuthMode] = useState("google"); // google | email-signin | email-signup
   const [authEmail, setAuthEmail] = useState("");
@@ -246,6 +247,14 @@ export default function FangornWebsite() {
     document.getElementById(s)?.scrollIntoView({ behavior: "smooth" });
   };
 
+  const rememberOverlayTrigger = useCallback(() => {
+    lastOverlayFocusRef.current = document.activeElement;
+  }, []);
+
+  const restoreOverlayFocus = useCallback(() => {
+    window.setTimeout(() => lastOverlayFocusRef.current?.focus?.({ preventScroll: true }), 0);
+  }, []);
+
   const resetContactForm = useCallback(() => {
     setContactName("");
     setContactEmail("");
@@ -266,7 +275,8 @@ export default function FangornWebsite() {
   const closeContactForm = useCallback(() => {
     setContactFormOpen(false);
     resetContactForm();
-  }, [resetContactForm]);
+    restoreOverlayFocus();
+  }, [resetContactForm, restoreOverlayFocus]);
 
   const resetAuthForm = useCallback(() => {
     setContactError(null);
@@ -279,27 +289,32 @@ export default function FangornWebsite() {
   const closeAuthDialog = useCallback(() => {
     setAuthDialogOpen(false);
     resetAuthForm();
-  }, [resetAuthForm]);
+    restoreOverlayFocus();
+  }, [resetAuthForm, restoreOverlayFocus]);
 
   const openAuthDialog = useCallback(() => {
+    rememberOverlayTrigger();
     setMobileMenuOpen(false);
     setAuthDialogOpen(true);
-  }, []);
+  }, [rememberOverlayTrigger]);
 
   const openProfile = useCallback(() => {
+    rememberOverlayTrigger();
     setMobileMenuOpen(false);
     setProfileOpen(true);
-  }, []);
+  }, [rememberOverlayTrigger]);
 
   const closeProfile = useCallback(() => {
     setProfileOpen(false);
     setSelectedEnquiryId(null);
-  }, []);
+    restoreOverlayFocus();
+  }, [restoreOverlayFocus]);
 
   const openContactForm = useCallback(() => {
+    rememberOverlayTrigger();
     setMobileMenuOpen(false);
     setContactFormOpen(true);
-  }, []);
+  }, [rememberOverlayTrigger]);
 
   const removeProjectFile = (index) => {
     setProjectFiles((prev) => prev.filter((_, j) => j !== index));
@@ -468,9 +483,13 @@ export default function FangornWebsite() {
       contactFormOpen ||
       authDialogOpen ||
       profileOpen;
-    document.body.style.overflow = lock ? "hidden" : "";
+    const prevBody = document.body.style.overflow;
+    const prevHtml = document.documentElement.style.overflow;
+    document.body.style.overflow = lock ? "hidden" : prevBody;
+    document.documentElement.style.overflow = lock ? "hidden" : prevHtml;
     return () => {
-      document.body.style.overflow = "";
+      document.body.style.overflow = prevBody;
+      document.documentElement.style.overflow = prevHtml;
     };
   }, [isMobileNav, mobileMenuOpen, contactFormOpen, authDialogOpen, profileOpen]);
 
@@ -511,8 +530,8 @@ export default function FangornWebsite() {
   ]);
 
   const navLogoSrc = isMobileNav || scrollY > 72 ? treeLogo : fullLogo;
-  const navLogoHeight = isMobileNav ? 40 : scrollY > 72 ? 38 : 46;
-  const navLogoMaxWidth = isMobileNav ? 200 : scrollY > 72 ? 52 : 280;
+  const navLogoHeight = isMobileNav ? 34 : scrollY > 72 ? 38 : 46;
+  const navLogoMaxWidth = isMobileNav ? 44 : scrollY > 72 ? 52 : 280;
 
   const services = [
     {
@@ -1175,14 +1194,45 @@ export default function FangornWebsite() {
 
         @media (max-width: 768px) {
           .site-noise-overlay { display: none; }
+          .nav-brand {
+            flex: 0 0 auto !important;
+            max-width: 44px !important;
+            overflow: hidden !important;
+          }
+          .nav-brand img {
+            width: 34px !important;
+            height: 34px !important;
+            max-width: 34px !important;
+            object-fit: contain !important;
+          }
           .partner-grid { grid-template-columns: 1fr; }
           .service-grid { grid-template-columns: 1fr !important; }
           .project-grid { grid-template-columns: 1fr !important; }
+          .home-copy { width: 100%; }
+          .hero-kicker {
+            font-size: 10px !important;
+            letter-spacing: 0.15em !important;
+            line-height: 1.55 !important;
+            margin-bottom: 20px !important;
+          }
           .hero-title { font-size: clamp(44px, 16vw, 64px) !important; line-height: 1.05 !important; }
-          .hero-sub { font-size: 16px !important; }
+          .hero-sub { font-size: 16px !important; max-width: 100% !important; margin-bottom: 32px !important; }
+          .hero-actions { flex-direction: column; width: 100%; gap: 12px !important; }
           .hero-tilth-card { grid-template-columns: 1fr; width: 100%; max-width: 100%; }
           .hero-tilth-arrow { display: none; }
+          .hero-coordinate-lockup { display: none !important; }
           .section-padding { padding: 88px 20px 56px !important; }
+          #home.section-padding {
+            min-height: auto !important;
+            justify-content: flex-start !important;
+            padding-top: max(112px, calc(92px + env(safe-area-inset-top, 0px))) !important;
+          }
+          .section-padding h2 { font-size: clamp(34px, 11vw, 46px) !important; }
+          .service-card,
+          .project-card,
+          .contact-expertise-card { padding: 24px !important; }
+          .partner-tile { padding: 18px; }
+          .partner-logo-well { height: 112px; min-height: 112px; }
           .stat-grid { grid-template-columns: 1fr 1fr !important; }
           .two-col { grid-template-columns: 1fr !important; gap: 40px !important; }
           .nav-links { display: none !important; }
@@ -1190,7 +1240,6 @@ export default function FangornWebsite() {
         }
 
         @media (max-width: 460px) {
-          .nav-brand img { max-width: min(220px, 58vw) !important; height: auto !important; }
           .hero-title { font-size: clamp(40px, 15vw, 58px) !important; }
           .hero-sub { line-height: 1.55 !important; }
           .stat-grid { grid-template-columns: 1fr !important; }
@@ -1206,14 +1255,18 @@ export default function FangornWebsite() {
           right: 0,
           zIndex: 1003,
           padding: isMobileNav
-            ? "max(20px, env(safe-area-inset-top, 0px)) 20px 20px 20px"
+            ? "max(12px, env(safe-area-inset-top, 0px)) 16px 12px 16px"
             : "20px 48px",
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          background: scrollY > 60 ? "rgba(255,255,255,0.92)" : "transparent",
-          backdropFilter: scrollY > 60 ? "blur(20px)" : "none",
-          borderBottom: scrollY > 60 ? `1px solid ${brand.border}` : "none",
+          background: isMobileNav
+            ? "rgba(255,255,255,0.97)"
+            : scrollY > 60
+              ? "rgba(255,255,255,0.92)"
+              : "transparent",
+          backdropFilter: isMobileNav || scrollY > 60 ? "blur(20px)" : "none",
+          borderBottom: isMobileNav || scrollY > 60 ? `1px solid ${brand.border}` : "none",
           transition: "all 0.4s",
         }}
       >
@@ -1489,8 +1542,9 @@ export default function FangornWebsite() {
         <GridLine position="45%" delay={0.6} />
         <GridLine position="75%" delay={0.9} />
 
-        <div style={{ maxWidth: 1100, position: "relative", zIndex: 1 }}>
+        <div className="home-copy" style={{ maxWidth: 1100, position: "relative", zIndex: 1 }}>
           <div
+            className="hero-kicker"
             style={{
               fontFamily: "'JetBrains Mono', monospace",
               fontSize: 11,
@@ -1547,6 +1601,7 @@ export default function FangornWebsite() {
           </p>
 
           <div
+            className="hero-actions"
             style={{
               display: "flex",
               gap: 16,
@@ -1593,6 +1648,7 @@ export default function FangornWebsite() {
         </div>
 
         <div
+          className="hero-coordinate-lockup"
           style={{
             position: "absolute",
             bottom: 48,
@@ -1604,7 +1660,7 @@ export default function FangornWebsite() {
             lineHeight: 2,
             animation: "fadeIn 2s 1.2s ease forwards",
             opacity: 0,
-            display: "flex",
+            display: isMobileNav ? "none" : "flex",
             flexDirection: "column",
             alignItems: "flex-end",
             gap: 12,

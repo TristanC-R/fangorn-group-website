@@ -99,7 +99,7 @@ export function CostsWorkspace({ farm, fields }) {
       <div className="tilth-scroll" style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", padding: "0 4px 4px" }}>
         {/* Farm aggregates */}
         {agg ? (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+          <div className="tilth-costs-stats" style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 10, marginBottom: 14 }}>
             <Stat kicker="Revenue" value={fmt(agg.totalRevenue)} sub="total" tone="forest" />
             <Stat kicker="Costs" value={fmt(agg.totalCost)} sub="variable" />
             <Stat kicker="Margin" value={fmt(agg.totalMargin)} sub="gross" tone={agg.totalMargin >= 0 ? "ok" : "danger"} />
@@ -107,7 +107,7 @@ export function CostsWorkspace({ farm, fields }) {
             <Stat kicker="Best field" value={agg.bestField?.name || "—"} sub={agg.bestField?.marginPerHa != null ? fmtHa(agg.bestField.marginPerHa) : ""} />
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+          <div className="tilth-costs-stats" style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 10, marginBottom: 14 }}>
             <Stat kicker="Revenue" value="—" sub="No yield data" />
             <Stat kicker="Costs" value="—" sub="" />
             <Stat kicker="Margin" value="—" sub="" />
@@ -174,7 +174,18 @@ export function CostsWorkspace({ farm, fields }) {
             </div>
           </Card>
         )}
-
+        <style>{`
+          @media (max-width: 900px) {
+            .tilth-costs-stats {
+              grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            }
+          }
+          @media (max-width: 430px) {
+            .tilth-costs-stats {
+              grid-template-columns: 1fr !important;
+            }
+          }
+        `}</style>
       </div>
     </WorkspaceFrame>
   );

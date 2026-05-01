@@ -65,9 +65,11 @@ import {
 } from "./tilthSentinel.js";
 import { useFieldSarScenes } from "./tilthSar.js";
 import {
+  CROP_CATALOGUE,
   cropNdviExpectation,
   phenologyToHealthStage,
 } from "./cropPhenology.js";
+import { SPECTRAL_INDEX_LIST, spectralValue } from "./spectralIndices.js";
 
 const DAY_MS = 86_400_000;
 
@@ -284,6 +286,21 @@ function stageExpectedNdvi(stage) {
  */
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
+function isGrassCrop(cropName) {
+  if (!cropName) return false;
+  const crop = CROP_CATALOGUE[cropName];
+  if (crop?.family === "grass") return true;
+  return /\b(grass|pasture|ley|grazing|silage|sward)\b/i.test(String(cropName));
+}
+
+function grassSeason(now) {
+  const month = new Date(now).getMonth() + 1;
+  if (month <= 2 || month === 12) return "winter";
+  if (month <= 5) return "spring";
+  if (month <= 8) return "summer";
+  return "autumn";
+}
+
 /**
  * Compute the per-field health record from one field's scene list.
  *
@@ -328,6 +345,7 @@ export function computeFieldHealth({
     : null;
 
   const cropExpectation = cropNdviExpectation(cropName, plantingDate, now);
+  const isGrassland = isGrassCrop(cropName);
 
   // Use crop-aware stage if available; otherwise fall back to universal detection.
   let stage, peakNdvi;
@@ -551,6 +569,8 @@ export function computeFieldHealth({
   }
 
   const ndmiDelta14d = metricDelta(cleanAsc, "ndmi_mean", now, RECENT_DAYS);
+  const eviDelta14d = metricDelta(cleanAsc, "evi_mean", now, RECENT_DAYS);
+  const ndviDelta14d = metricDelta(cleanAsc, "ndvi_mean", now, RECENT_DAYS);
   if (activeGrowth && Number.isFinite(ndmiDelta14d) && ndmiDelta14d <= -0.08) {
     flags.push("moisture_decline");
     pushWarning(warnings, {
@@ -561,6 +581,26 @@ export function computeFieldHealth({
       detail: `NDMI has dropped by ${Math.abs(ndmiDelta14d).toFixed(2)} over the recent scene window.`,
       action: "Check rainfall deficit, rooting restrictions, irrigation scheduling, and drought-prone field zones.",
       evidence: ["Sentinel-2 NDMI trend"],
+    });
+  }
+
+  if (
+    activeGrowth &&
+    latest &&
+    Number.isFinite(latest.evi_mean) &&
+    Number.isFinite(eviDelta14d) &&
+    eviDelta14d <= -0.06 &&
+    (!Number.isFinite(slope14d) || slope14d <= 0)
+  ) {
+    flags.push("dense_canopy_decline");
+    pushWarning(warnings, {
+      type: "dense_canopy_decline",
+      severity: "medium",
+      confidence: "medium",
+      title: "Dense canopy signal declining",
+      detail: `EVI has dropped by ${Math.abs(eviDelta14d).toFixed(2)}, which can show loss of vigour in dense canopy where NDVI saturates.`,
+      action: "Check disease, lodging, nutrient stress, and whether the crop is beginning natural senescence.",
+      evidence: ["Sentinel-2 EVI trend", "NDVI trend"],
     });
   }
 
@@ -602,6 +642,128 @@ export function computeFieldHealth({
       action: "Check establishment evenness, seed rate, pest damage, and compaction lines.",
       evidence: ["Sentinel-2 SAVI", "Crop stage"],
     });
+  }
+
+  const nbrDelta14d = metricDelta(cleanAsc, "nbr_mean", now, RECENT_DAYS);
+  if (
+    latest &&
+    Number.isFinite(latest.nbr_mean) &&
+    (
+      latest.nbr_mean < 0.05 ||
+      (Number.isFinite(nbrDelta14d) && nbrDelta14d <= -0.12)
+    ) &&
+    stage !== "harvested"
+  ) {
+    flags.push("disturbance_or_exposed_soil");
+    pushWarning(warnings, {
+      type: "disturbance_or_exposed_soil",
+      severity: activeGrowth ? "medium" : "low",
+      confidence: Number.isFinite(nbrDelta14d) ? "medium" : "low",
+      title: "Possible residue, exposed soil or disturbance signal",
+      detail: Number.isFinite(nbrDelta14d)
+        ? `NBR has fallen by ${Math.abs(nbrDelta14d).toFixed(2)}, adding context for exposed soil, residue, scorch, or abrupt canopy disturbance.`
+        : `NBR is low (${latest.nbr_mean.toFixed(2)}), adding context for exposed soil, residue or disturbance.`,
+      action: "Compare with recent operations, harvest/residue status, scorch, grazing, or localised damage before treating it as crop stress.",
+      evidence: ["Sentinel-2 NBR", "Field operations context"],
+    });
+  }
+
+  if (isGrassland && latest) {
+    const season = grassSeason(now);
+    const inGrowthSeason = season !== "winter";
+    const ndvi = Number.isFinite(v) ? v : null;
+    const savi = Number.isFinite(latest.savi_mean) ? latest.savi_mean : null;
+    const ndre = Number.isFinite(latest.ndre_mean) ? latest.ndre_mean : null;
+    const ndmi = Number.isFinite(latest.ndmi_mean) ? latest.ndmi_mean : null;
+    const ndwi = Number.isFinite(latest.ndwi_mean) ? latest.ndwi_mean : null;
+    const evi = Number.isFinite(latest.evi_mean) ? latest.evi_mean : null;
+    const wetRisk = Number.isFinite(ndwi) && ndwi > -0.02 && Number.isFinite(ndmi) && ndmi > 0.18;
+    const moistureStress = Number.isFinite(ndmi) && ndmi < -0.08;
+    const enoughCover = Number.isFinite(ndvi) && ndvi >= 0.5 && (!Number.isFinite(savi) || savi >= 0.36);
+
+    if (inGrowthSeason && enoughCover && !wetRisk && !moistureStress) {
+      flags.push("grazing_ready");
+    }
+
+    if (
+      inGrowthSeason &&
+      (
+        (Number.isFinite(ndvi) && ndvi < 0.34 && (!Number.isFinite(savi) || savi < 0.26)) ||
+        (Number.isFinite(ndviDelta14d) && ndviDelta14d <= -0.16 && Number.isFinite(ndvi) && ndvi < 0.45)
+      )
+    ) {
+      flags.push("overgrazing_risk");
+      pushWarning(warnings, {
+        type: "overgrazing_risk",
+        severity: "high",
+        confidence: Number.isFinite(ndviDelta14d) ? "medium" : "low",
+        title: "Possible overgrazing",
+        detail: Number.isFinite(ndviDelta14d)
+          ? `Grass cover has fallen quickly (${ndviDelta14d.toFixed(2)} NDVI change) and current cover is low.`
+          : "Grass cover is low for active grazing season.",
+        action: "Rest the paddock, check residual cover, and move stock if the sward is below target height.",
+        evidence: ["Sentinel-2 NDVI", "Sentinel-2 SAVI"],
+      });
+    }
+
+    if (
+      inGrowthSeason &&
+      (
+        (Number.isFinite(ndvi) && ndvi >= 0.72) ||
+        (Number.isFinite(evi) && evi >= 0.52)
+      ) &&
+      !moistureStress
+    ) {
+      flags.push("silage_ready");
+    }
+
+    if (
+      inGrowthSeason &&
+      !moistureStress &&
+      (
+        (Number.isFinite(ndre) && ndre < 0.22 && Number.isFinite(ndvi) && ndvi < 0.62) ||
+        (Number.isFinite(ndviDelta14d) && ndviDelta14d < 0.03 && Number.isFinite(ndvi) && ndvi < 0.55 && !wetRisk)
+      )
+    ) {
+      flags.push("fertiliser_required");
+      pushWarning(warnings, {
+        type: "fertiliser_required",
+        severity: "medium",
+        confidence: Number.isFinite(ndre) ? "medium" : "low",
+        title: "Grass may need fertiliser",
+        detail: Number.isFinite(ndre)
+          ? `Red-edge chlorophyll signal is weak (${ndre.toFixed(2)}) and grass cover is not building strongly.`
+          : "Grass growth appears stalled without a strong moisture-stress signal.",
+        action: "Check recent nitrogen/slurry applications, grazing pressure, soil fertility, and weather before applying fertiliser.",
+        evidence: ["Sentinel-2 NDRE", "Grass growth trend"],
+      });
+    }
+
+    if (moistureStress) {
+      flags.push("grass_water_stress");
+      pushWarning(warnings, {
+        type: "grass_water_stress",
+        severity: "medium",
+        confidence: "medium",
+        title: "Grass water stress",
+        detail: `NDMI is low (${ndmi.toFixed(2)}) for grassland during the growing season.`,
+        action: "Check soil moisture, recent rainfall, and whether grazing pressure should be reduced until regrowth improves.",
+        evidence: ["Sentinel-2 NDMI"],
+      });
+    }
+
+    if (wetRisk && Number.isFinite(ndvi) && ndvi < 0.55) {
+      flags.push("poaching_risk");
+      pushWarning(warnings, {
+        type: "poaching_risk",
+        severity: "medium",
+        confidence: "low",
+        title: "Wet grazing or poaching risk",
+        detail: "Water indices are high while sward cover is modest.",
+        action: "Check gateways, troughs and low spots before turning stock out or travelling.",
+        evidence: ["Sentinel-2 NDWI", "Sentinel-2 NDMI", "NDVI"],
+      });
+    }
   }
 
   if (
@@ -689,9 +851,17 @@ export function computeFieldHealth({
   if (flags.includes("below_expected_for_stage")) score -= 12;
   if (flags.includes("water_stress")) score -= 8;
   if (flags.includes("moisture_decline")) score -= 7;
+  if (flags.includes("dense_canopy_decline")) score -= 6;
   if (flags.includes("chlorophyll_stress")) score -= 8;
   if (flags.includes("thin_canopy")) score -= 7;
   if (flags.includes("surface_wetness")) score -= 6;
+  if (flags.includes("disturbance_or_exposed_soil")) score -= activeGrowth ? 6 : 3;
+  if (flags.includes("overgrazing_risk")) score -= 14;
+  if (flags.includes("fertiliser_required")) score -= 7;
+  if (flags.includes("grass_water_stress")) score -= 8;
+  if (flags.includes("poaching_risk")) score -= 7;
+  if (flags.includes("grazing_ready")) score += 4;
+  if (flags.includes("silage_ready")) score += 4;
   score = clamp(score, 0, 100);
 
   // Confidence.
@@ -706,34 +876,52 @@ export function computeFieldHealth({
   const dspDays = cropExpectation?.daysSincePlanting ?? null;
 
   const summary = (() => {
+    if (isGrassland) {
+      if (flags.includes("overgrazing_risk"))
+        return "Grass cover looks low or has fallen quickly — possible overgrazing. Rest the paddock and check residual sward height.";
+      if (flags.includes("poaching_risk"))
+        return "Grassland looks wet with modest cover — check poaching risk before turning stock out or travelling.";
+      if (flags.includes("grass_water_stress") || flags.includes("water_stress"))
+        return "Grass canopy moisture is low — reduce grazing pressure if regrowth is slowing and check rainfall deficit.";
+      if (flags.includes("fertiliser_required"))
+        return "Grass growth looks nutrient-limited or stalled — check recent fertiliser/slurry, soil fertility and moisture before applying.";
+      if (flags.includes("silage_ready"))
+        return "Grass cover is strong and dense — likely ready to assess for silage cutting.";
+      if (flags.includes("grazing_ready"))
+        return "Grass cover looks ready for grazing, with enough canopy and no strong moisture or wetness warning.";
+    }
     if (flags.includes("below_expected_for_stage") && cropLabel)
-      return `${cropName} is behind where it should be at ${cropExpectation.stageName} stage — NDVI below expected range. Check for establishment issues or stress.`;
+      return `${cropName} is behind where it should be at ${cropExpectation.stageName} stage — canopy and spectral signals are below the expected range. Check establishment, nutrition, moisture and disease pressure.`;
     if (flags.includes("late_emergence"))
       return cropLabel
-        ? `${cropName} hasn't established on schedule — past expected emergence and NDVI still low.`
-        : "Crop hasn't established — past expected emergence and NDVI still low.";
+        ? `${cropName} hasn't established on schedule — past expected emergence and the canopy signal is still weak.`
+        : "Crop hasn't established — past expected emergence and the canopy signal is still weak.";
     if (flags.includes("stuck"))
       return cropLabel
         ? `${cropName} growth has stalled during ${cropExpectation.stageName}. Worth a walk-over.`
         : "Growth has stalled over the past three weeks. Worth a walk-over.";
     if (flags.includes("ndvi_dip_7d"))
-      return "Sudden drop in NDVI over the last week — check for stress, lodging or cloud.";
+      return "Sudden vegetation-index drop over the last week — check for stress, lodging, operations or cloud contamination.";
     if (flags.includes("sar_ndvi_divergence"))
-      return "Radar disagrees with NDVI — possible lodging or canopy break.";
+      return "Radar and optical canopy signals disagree — possible lodging, canopy break or cloud contamination.";
     if (flags.includes("water_stress"))
       return "Moisture index (NDMI) suggests water stress — check soil moisture and irrigation.";
     if (flags.includes("moisture_decline"))
       return "Canopy moisture is falling — check rainfall deficit, irrigation, and drought-prone patches.";
+    if (flags.includes("dense_canopy_decline"))
+      return "Enhanced vegetation signal is falling — check dense-canopy stress, disease, lodging or early senescence.";
     if (flags.includes("chlorophyll_stress"))
       return "Red-edge signal suggests possible chlorophyll or nitrogen stress.";
     if (flags.includes("thin_canopy"))
       return "Canopy still looks thin for this point in the season — check establishment.";
     if (flags.includes("surface_wetness"))
       return "Water indices suggest a possible wet surface or waterlogging risk.";
+    if (flags.includes("disturbance_or_exposed_soil"))
+      return "NBR suggests exposed soil, residue, scorch or disturbance context — compare with recent operations.";
     if (flags.includes("below_cohort"))
       return "Trailing the rest of the farm. Compare with neighbours for context.";
     if (flags.includes("cloud_blocked"))
-      return "Recent NDVI is mostly cloud-suspect. Use the radar workspace for a clean reading.";
+      return "Recent optical scenes are mostly cloud-suspect. Use the radar workspace for a clean reading.";
     if (flags.includes("no_recent_data") && stage !== "harvested")
       return "No fresh imagery in two weeks. Auto-refresh has been kicked off.";
     if (cropLabel) {
@@ -767,7 +955,7 @@ export function computeFieldHealth({
         return "Bare ground. No active crop signal.";
       case "emerging":
         return trend === "improving"
-          ? "Establishing well — NDVI rising into early canopy."
+          ? "Establishing well — the canopy signal is rising."
           : "Crop is emerging.";
       case "growing":
         return trend === "improving"
@@ -835,8 +1023,25 @@ export function computeFieldHealth({
       ndreMean: latest?.ndre_mean ?? null,
       saviMean: latest?.savi_mean ?? null,
       nbrMean: latest?.nbr_mean ?? null,
+      grassland: isGrassland ? {
+        readiness: flags.includes("grazing_ready")
+          ? "grazing_ready"
+          : flags.includes("silage_ready")
+            ? "silage_ready"
+            : flags.includes("overgrazing_risk")
+              ? "overgrazing_risk"
+              : flags.includes("fertiliser_required")
+                ? "fertiliser_required"
+                : "monitor",
+        season: grassSeason(now),
+      } : null,
+      spectral: Object.fromEntries(
+        SPECTRAL_INDEX_LIST.map((idx) => [idx.id, spectralValue(latest, idx.id)])
+      ),
       ndmiDelta14d,
+      eviDelta14d,
       ndreDelta14d,
+      nbrDelta14d,
     },
   };
 }
@@ -903,10 +1108,18 @@ export const FLAG_LABELS = {
   no_recent_data: "No recent imagery",
   water_stress: "Possible water stress",
   moisture_decline: "Moisture falling",
+  dense_canopy_decline: "EVI declining",
   chlorophyll_stress: "Chlorophyll/N stress",
   thin_canopy: "Thin canopy",
   surface_wetness: "Wet surface risk",
+  disturbance_or_exposed_soil: "NBR disturbance context",
   below_expected_for_stage: "Below expected for growth stage",
+  grazing_ready: "Ready to graze",
+  overgrazing_risk: "Overgrazing risk",
+  silage_ready: "Silage ready",
+  fertiliser_required: "Fertiliser may be needed",
+  grass_water_stress: "Grass water stress",
+  poaching_risk: "Poaching risk",
 };
 
 /**

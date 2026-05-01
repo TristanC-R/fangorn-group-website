@@ -159,6 +159,7 @@ export function AppShell({
     >
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=JetBrains+Mono:wght@300;400&display=swap');
+        .tilth-scroll { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
         .tilth-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
         .tilth-scroll::-webkit-scrollbar-thumb { background: ${brand.borderSoft}; border-radius: 4px; }
         .tilth-scroll::-webkit-scrollbar-thumb:hover { background: ${brand.tagBorder}; }
@@ -214,6 +215,79 @@ export function AppShell({
             padding: 10px !important;
             gap: 10px !important;
           }
+          .tilth-docs-form-card,
+          .tilth-inventory-form-card,
+          .tilth-finance-form-card,
+          .tilth-calendar-form-card {
+            position: fixed !important;
+            left: max(10px, env(safe-area-inset-left, 0px)) !important;
+            right: max(10px, env(safe-area-inset-right, 0px)) !important;
+            bottom: max(10px, env(safe-area-inset-bottom, 0px)) !important;
+            z-index: 2200 !important;
+            width: auto !important;
+            max-width: none !important;
+            max-height: min(88dvh, 760px) !important;
+            overflow-y: auto !important;
+            overscroll-behavior: contain !important;
+            border-radius: 16px 16px 8px 8px !important;
+            box-shadow: 0 -18px 70px rgba(14,42,36,0.22) !important;
+            padding: 16px !important;
+            box-sizing: border-box !important;
+          }
+          .tilth-docs-form-grid,
+          .tilth-inventory-form-grid,
+          .tilth-finance-form-grid {
+            grid-template-columns: 1fr !important;
+          }
+          .tilth-docs-actions,
+          .tilth-inventory-form-actions,
+          .tilth-finance-form-actions {
+            display: grid !important;
+            grid-template-columns: 1fr !important;
+            position: sticky;
+            bottom: 0;
+            background: ${brand.white};
+            padding-top: 10px;
+          }
+          .tilth-docs-actions button,
+          .tilth-inventory-form-actions button,
+          .tilth-finance-form-actions button {
+            width: 100% !important;
+          }
+          .tilth-records-form-column.tilth-mobile-sheet-open,
+          .tilth-observations-form-column.tilth-mobile-sheet-open,
+          .tilth-livestock-form-card,
+          .tilth-market-form-card {
+            position: fixed !important;
+            left: max(10px, env(safe-area-inset-left, 0px)) !important;
+            right: max(10px, env(safe-area-inset-right, 0px)) !important;
+            bottom: max(10px, env(safe-area-inset-bottom, 0px)) !important;
+            top: auto !important;
+            z-index: 2300 !important;
+            width: auto !important;
+            max-width: none !important;
+            max-height: min(88dvh, 760px) !important;
+            overflow-y: auto !important;
+            overscroll-behavior: contain !important;
+            border-radius: 16px 16px 8px 8px !important;
+            border: 1px solid ${brand.border} !important;
+            background: ${brand.white} !important;
+            box-shadow: 0 -18px 70px rgba(14,42,36,0.22) !important;
+            padding: 16px !important;
+            box-sizing: border-box !important;
+          }
+          .tilth-livestock-form-card > div,
+          .tilth-market-form-card > div {
+            grid-template-columns: 1fr !important;
+          }
+          .tilth-records-form-column:not(.tilth-mobile-sheet-open),
+          .tilth-observations-form-column:not(.tilth-mobile-sheet-open) {
+            display: none !important;
+          }
+          .tilth-shell-header {
+            padding-left: max(12px, env(safe-area-inset-left, 0px)) !important;
+            padding-right: max(12px, env(safe-area-inset-right, 0px)) !important;
+          }
         }
         @media (max-width: 480px) {
           .tilth-sidebar.open button { padding: 10px 14px !important; font-size: 14px !important; min-height: 44px; }
@@ -221,6 +295,7 @@ export function AppShell({
       `}</style>
 
       <header
+        className="tilth-shell-header"
         style={{
           height: HEADER_HEIGHT,
           flex: `0 0 ${HEADER_HEIGHT}px`,

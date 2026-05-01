@@ -210,9 +210,9 @@ export function SubmissionsWorkspace({ farm, fields }) {
       }
     >
       {withRings.length ? (
-        <div className="tilth-scheme-layout" style={{ flex: "1 1 auto", minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: 12, overflow: "hidden" }}>
+        <div className="tilth-scheme-layout tilth-scroll" style={{ flex: "1 1 auto", minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: 12, overflow: "hidden" }}>
           {/* Left: field list + expanded detail */}
-          <div style={{ display: "flex", flexDirection: "column", minHeight: 0, gap: 8 }}>
+          <div className="tilth-scheme-main" style={{ display: "flex", flexDirection: "column", minHeight: 0, gap: 8 }}>
             {!expandedField ? (
               <Card padding={12} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8 }}>
@@ -261,7 +261,7 @@ export function SubmissionsWorkspace({ farm, fields }) {
           </div>
 
           {/* Right: summary sidebar */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 0, overflowY: "auto", paddingRight: 4 }} className="tilth-scroll">
+          <div className="tilth-scheme-sidebar tilth-scroll" style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 0, overflowY: "auto", paddingRight: 4 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <Stat kicker="Est. annual" value={`£${summary.totalEstimated.toLocaleString()}`} sub="If all assigned" tone="forest" />
               <Stat kicker="Assigned" value={summary.totalAssigned} sub={`across ${fieldResults.length} fields`} />
@@ -358,6 +358,32 @@ export function SubmissionsWorkspace({ farm, fields }) {
       <style>{`
         @media (max-width: 1250px) {
           .tilth-scheme-layout { grid-template-columns: 1fr !important; }
+        }
+        @media (max-width: 760px) {
+          .tilth-scheme-layout {
+            display: flex !important;
+            flex-direction: column !important;
+            overflow-y: auto !important;
+            padding-bottom: 18px !important;
+          }
+          .tilth-scheme-main,
+          .tilth-scheme-sidebar,
+          .tilth-scheme-sidebar.tilth-scroll {
+            min-height: auto !important;
+            overflow: visible !important;
+            padding-right: 0 !important;
+          }
+          .tilth-scheme-main > .tilth-mobile-card,
+          .tilth-scheme-main > div,
+          .tilth-scheme-main .tilth-scroll,
+          .tilth-scheme-sidebar .tilth-scroll {
+            min-height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+          }
+          .tilth-scheme-main [style*="grid-template-columns: minmax(0, 1fr) auto auto auto"] {
+            grid-template-columns: 1fr !important;
+          }
         }
       `}</style>
     </WorkspaceFrame>

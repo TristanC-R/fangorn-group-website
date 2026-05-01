@@ -298,7 +298,7 @@ export function YieldWorkspace({ farm, fields }) {
             overflow: "hidden",
           }}
         >
-          <div style={{ display: "flex", flexDirection: "column", minHeight: 0, gap: 8 }}>
+          <div className="tilth-yield-map-column" style={{ display: "flex", flexDirection: "column", minHeight: 0, gap: 8 }}>
             <div style={{ flex: "1 1 auto", minHeight: 0 }}>
               <FieldMapThree2D
                 key={`yield-${mapCenter.lat}-${mapCenter.lng}`}
@@ -327,6 +327,7 @@ export function YieldWorkspace({ farm, fields }) {
           </div>
 
           <div
+            className="tilth-yield-content tilth-scroll"
             style={{
               display: "flex",
               flexDirection: "column",
@@ -335,7 +336,6 @@ export function YieldWorkspace({ farm, fields }) {
               overflowY: "auto",
               paddingRight: 4,
             }}
-            className="tilth-scroll"
           >
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <Stat
@@ -363,7 +363,7 @@ export function YieldWorkspace({ farm, fields }) {
                 <Kicker>Per-field trend</Kicker>
                 <Pill tone="neutral">t / ha</Pill>
               </div>
-              <div style={{ display: "grid", gap: 4, maxHeight: 220, overflowY: "auto" }} className="tilth-scroll">
+              <div className="tilth-yield-trend-list tilth-scroll" style={{ display: "grid", gap: 4, maxHeight: 220, overflowY: "auto" }}>
                 {trendRows.map((row) => (
                   <Row key={row.id} style={{ padding: "7px 9px" }}>
                     <div
@@ -461,6 +461,35 @@ export function YieldWorkspace({ farm, fields }) {
       <style>{`
         @media (max-width: 1250px) {
           .tilth-yield-layout { grid-template-columns: 1fr !important; grid-template-rows: minmax(260px, 1fr) auto !important; }
+        }
+        @media (max-width: 760px) {
+          .tilth-yield-layout {
+            display: flex !important;
+            flex-direction: column !important;
+            overflow-y: auto !important;
+          }
+          .tilth-yield-map-column {
+            display: none !important;
+          }
+          .tilth-yield-content,
+          .tilth-yield-content.tilth-scroll {
+            min-height: auto !important;
+            overflow: visible !important;
+            padding-right: 0 !important;
+          }
+          .tilth-yield-content > div:first-child {
+            grid-template-columns: 1fr 1fr !important;
+          }
+          .tilth-yield-trend-list,
+          .tilth-yield-trend-list.tilth-scroll {
+            max-height: none !important;
+            overflow: visible !important;
+          }
+        }
+        @media (max-width: 430px) {
+          .tilth-yield-content > div:first-child {
+            grid-template-columns: 1fr !important;
+          }
         }
       `}</style>
     </WorkspaceFrame>

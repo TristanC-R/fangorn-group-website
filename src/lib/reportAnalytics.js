@@ -9,6 +9,7 @@
 
 import { flagSuspectScenes } from "./cropHealth.js";
 import { CROP_CATALOGUE, daysSincePlanting, expectedStage } from "./cropPhenology.js";
+import { SPECTRAL_INDEX_LIST, spectralValue } from "./spectralIndices.js";
 
 const DAY_MS = 86_400_000;
 function ms(iso) { const t = new Date(iso).getTime(); return Number.isFinite(t) ? t : 0; }
@@ -47,10 +48,22 @@ export function analyseFieldPeriod(scenes, start, end) {
   // Linear regression slope (NDVI per day)
   const slope = linearSlope(clean.map((s) => ({ t: ms(s.scene_datetime), v: s.ndvi_mean })));
 
-  // EVI / NDWI / NDMI summaries if available
-  const eviValues = clean.filter((s) => Number.isFinite(s.evi_mean)).map((s) => s.evi_mean);
-  const ndwiValues = clean.filter((s) => Number.isFinite(s.ndwi_mean)).map((s) => s.ndwi_mean);
-  const ndmiValues = clean.filter((s) => Number.isFinite(s.ndmi_mean)).map((s) => s.ndmi_mean);
+  const spectral = Object.fromEntries(SPECTRAL_INDEX_LIST.map((idx) => {
+    const pts = clean
+      .map((s) => ({ t: ms(s.scene_datetime), v: spectralValue(s, idx.id) }))
+      .filter((p) => Number.isFinite(p.v));
+    const first = pts[0] || null;
+    const last = pts[pts.length - 1] || null;
+    return [idx.id, {
+      label: idx.label,
+      mean: pts.length ? round(avg(pts.map((p) => p.v)), 3) : null,
+      start: first ? round(first.v, 3) : null,
+      end: last ? round(last.v, 3) : null,
+      change: first && last ? round(last.v - first.v, 3) : null,
+      slopePerDay: pts.length >= 2 ? linearSlope(pts.map((p) => ({ t: p.t, v: p.v }))) : null,
+      observations: pts.length,
+    }];
+  }));
 
   // Detect largest dip in period
   let maxDip = 0, dipDate = null;
@@ -83,9 +96,13 @@ export function analyseFieldPeriod(scenes, start, end) {
     dipDate,
     peakNdvi: peakScene ? round(peakScene.ndvi_mean, 3) : null,
     peakDate: peakScene?.scene_datetime || null,
-    eviMean: eviValues.length ? round(avg(eviValues), 3) : null,
-    ndwiMean: ndwiValues.length ? round(avg(ndwiValues), 3) : null,
-    ndmiMean: ndmiValues.length ? round(avg(ndmiValues), 3) : null,
+    spectral,
+    eviMean: spectral.evi.mean,
+    ndwiMean: spectral.ndwi.mean,
+    ndmiMean: spectral.ndmi.mean,
+    ndreMean: spectral.ndre.mean,
+    saviMean: spectral.savi.mean,
+    nbrMean: spectral.nbr.mean,
     sparkData: clean.map((s) => ({ t: ms(s.scene_datetime), ndvi: s.ndvi_mean })),
   };
 }
@@ -234,6 +251,54 @@ export function generateRecommendations(fieldAnalyses, healthMap, cadence, plant
       title: `Low moisture index on ${moistureStress.length} field${moistureStress.length > 1 ? "s" : ""}`,
       detail: `${moistureStress.join(", ")} show mean NDMI below −0.1, suggesting potential water stress. Review drainage and irrigation if applicable.`,
       fields: moistureStress,
+    });
+  }
+
+  const chlorophyllStress = [];
+  const thinCanopy = [];
+  const disturbanceContext = [];
+  const denseCanopyDecline = [];
+  for (const f of fieldAnalyses) {
+    const h = healthMap?.get(f.fieldId);
+    if (h?.flags?.includes("chlorophyll_stress")) chlorophyllStress.push(f.name);
+    if (h?.flags?.includes("thin_canopy")) thinCanopy.push(f.name);
+    if (h?.flags?.includes("disturbance_or_exposed_soil")) disturbanceContext.push(f.name);
+    if (h?.flags?.includes("dense_canopy_decline")) denseCanopyDecline.push(f.name);
+  }
+  if (chlorophyllStress.length) {
+    recs.push({
+      priority: "medium",
+      category: "Chlorophyll / nitrogen",
+      title: `Red-edge stress signal on ${chlorophyllStress.length} field${chlorophyllStress.length > 1 ? "s" : ""}`,
+      detail: `${chlorophyllStress.join(", ")} show weak or falling NDRE. Check nitrogen status, leaf colour, disease, and soil fertility variation.`,
+      fields: chlorophyllStress,
+    });
+  }
+  if (thinCanopy.length) {
+    recs.push({
+      priority: "medium",
+      category: "Canopy establishment",
+      title: `SAVI suggests thin canopy on ${thinCanopy.length} field${thinCanopy.length > 1 ? "s" : ""}`,
+      detail: `${thinCanopy.join(", ")} show sparse-canopy stress where soil background can distort NDVI. Check establishment, compaction and pest damage.`,
+      fields: thinCanopy,
+    });
+  }
+  if (denseCanopyDecline.length) {
+    recs.push({
+      priority: "medium",
+      category: "Dense canopy",
+      title: `EVI falling on ${denseCanopyDecline.length} dense-canopy field${denseCanopyDecline.length > 1 ? "s" : ""}`,
+      detail: `${denseCanopyDecline.join(", ")} show declining enhanced vegetation signal. Check disease, lodging, nutrient stress or early senescence.`,
+      fields: denseCanopyDecline,
+    });
+  }
+  if (disturbanceContext.length) {
+    recs.push({
+      priority: "low",
+      category: "Residue / disturbance",
+      title: `NBR context flagged on ${disturbanceContext.length} field${disturbanceContext.length > 1 ? "s" : ""}`,
+      detail: `${disturbanceContext.join(", ")} show NBR context for exposed soil, residue, scorch or abrupt disturbance. Compare with recent operations before treating it as crop stress.`,
+      fields: disturbanceContext,
     });
   }
 

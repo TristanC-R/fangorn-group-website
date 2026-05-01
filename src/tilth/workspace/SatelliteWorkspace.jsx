@@ -16,11 +16,20 @@ import { FieldMapThree2D } from "../FieldMapThree2D.jsx";
 import { ringCentroid } from "../geoPointInPolygon.js";
 import {
   autoRefreshStaleFields,
-  buildNdviTileUrlFn,
+  buildSpectralTileUrlFn,
   triggerNdviRefresh,
   useFieldNdviScenes,
   useSentinelQueueStatus,
 } from "../../lib/tilthSentinel.js";
+import {
+  SPECTRAL_INDEX_LIST,
+  formatSpectralValue,
+  spectralColor,
+  spectralIndex,
+  spectralSummary,
+  spectralTone,
+  spectralValue,
+} from "../../lib/spectralIndices.js";
 
 /**
  * Sentinel-2 NDVI workspace — wired to Microsoft Planetary Computer via
@@ -33,47 +42,6 @@ import {
  * queue against MPC titiler `/item/statistics`). The workspace itself
  * only reads the table — refresh is a one-click background trigger.
  */
-
-// Pinned across the whole workspace so the polygon colour ramp matches
-// the Sentinel raster overlay exactly. These mirror NDVI_DEFAULT_RESCALE
-// + NDVI_DEFAULT_COLORMAP in tilth-api/sentinel/mpcClient.mjs — keep
-// them in sync if you change the titiler defaults.
-const NDVI_RAMP_MIN = 0.0;
-const NDVI_RAMP_MAX = 0.9;
-const NDVI_RESCALE_PARAM = `${NDVI_RAMP_MIN.toFixed(1)},${NDVI_RAMP_MAX.toFixed(1)}`;
-const NDVI_COLORMAP = "rdylgn";
-
-// 3-stop red → yellow → green ramp matching matplotlib's RdYlGn used by
-// titiler. Lerps in linear sRGB; close enough for at-a-glance choropleth.
-const NDVI_RAMP_STOPS = [
-  { t: 0.0, rgb: [165, 0, 38] }, // bare / stressed (low NDVI, often <0.2)
-  { t: 0.5, rgb: [255, 255, 191] }, // mid (around 0.45)
-  { t: 1.0, rgb: [0, 104, 55] }, // healthy canopy (>0.75 → dark green)
-];
-
-function ndviColor(v) {
-  if (!Number.isFinite(v)) return "#cfd9cf";
-  const t = Math.max(0, Math.min(1, (v - NDVI_RAMP_MIN) / (NDVI_RAMP_MAX - NDVI_RAMP_MIN)));
-  let lo = NDVI_RAMP_STOPS[0];
-  let hi = NDVI_RAMP_STOPS[NDVI_RAMP_STOPS.length - 1];
-  for (let i = 0; i < NDVI_RAMP_STOPS.length - 1; i++) {
-    if (t >= NDVI_RAMP_STOPS[i].t && t <= NDVI_RAMP_STOPS[i + 1].t) {
-      lo = NDVI_RAMP_STOPS[i];
-      hi = NDVI_RAMP_STOPS[i + 1];
-      break;
-    }
-  }
-  const span = Math.max(1e-6, hi.t - lo.t);
-  const k = (t - lo.t) / span;
-  const r = Math.round(lo.rgb[0] + (hi.rgb[0] - lo.rgb[0]) * k);
-  const g = Math.round(lo.rgb[1] + (hi.rgb[1] - lo.rgb[1]) * k);
-  const b = Math.round(lo.rgb[2] + (hi.rgb[2] - lo.rgb[2]) * k);
-  return `rgb(${r}, ${g}, ${b})`;
-}
-
-function fmtNdvi(v) {
-  return Number.isFinite(v) ? v.toFixed(2) : "—";
-}
 
 function fmtDate(iso) {
   if (!iso) return "—";
@@ -360,27 +328,28 @@ function computePhenology(scenesAsc, { windowDays = PHENOLOGY_WINDOW_DAYS } = {}
  */
 const YEAR_MS = 365 * 86_400_000;
 
-function NdviCurve({ scenes, activeIso, suspectIds, showYearOverYear = true }) {
+function IndexCurve({ scenes, activeIso, suspectIds, indexId = "ndvi", showYearOverYear = true, emptyMessage = "No usable scenes yet" }) {
+  const cfg = spectralIndex(indexId);
   const allPoints = useMemo(() => {
     const suspect = suspectIds || new Set();
     const arr = (scenes || [])
       .filter(
         (s) =>
           s.status === "ok" &&
-          Number.isFinite(s.ndvi_mean) &&
+          Number.isFinite(spectralValue(s, indexId)) &&
           Number.isFinite(s.valid_pixel_count) &&
           s.valid_pixel_count > 0
       )
       .map((s) => ({
         t: new Date(s.scene_datetime).getTime(),
-        v: Math.max(NDVI_RAMP_MIN, Math.min(NDVI_RAMP_MAX, s.ndvi_mean)),
+        v: Math.max(cfg.min, Math.min(cfg.max, spectralValue(s, indexId))),
         iso: s.scene_datetime,
         id: s.item_id,
         suspect: suspect.has(s.item_id),
       }))
       .sort((a, b) => a.t - b.t);
     return arr;
-  }, [scenes, suspectIds]);
+  }, [scenes, suspectIds, indexId, cfg.min, cfg.max]);
 
   // Split into this-year (≤365d) and last-year (>365d) tracks. The
   // last-year track is rendered shifted forward by 365 days so the
@@ -420,7 +389,7 @@ function NdviCurve({ scenes, activeIso, suspectIds, showYearOverYear = true }) {
           borderRadius: radius.base,
         }}
       >
-        No usable scenes yet
+        {emptyMessage}
       </div>
     );
   }
@@ -432,7 +401,7 @@ function NdviCurve({ scenes, activeIso, suspectIds, showYearOverYear = true }) {
   const span = Math.max(1, t1 - t0);
   const xFor = (t) => padX + ((t - t0) / span) * (w - padX * 2);
   const yFor = (v) =>
-    h - padY - ((v - NDVI_RAMP_MIN) / (NDVI_RAMP_MAX - NDVI_RAMP_MIN)) * (h - padY * 2);
+    h - padY - ((v - cfg.min) / Math.max(1e-6, cfg.max - cfg.min)) * (h - padY * 2);
 
   const cleanPoints = points.filter((p) => !p.suspect);
   const path = cleanPoints
@@ -459,17 +428,17 @@ function NdviCurve({ scenes, activeIso, suspectIds, showYearOverYear = true }) {
       aria-hidden
     >
       <defs>
-        <linearGradient id="ndvi-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#006837" stopOpacity="0.42" />
+        <linearGradient id={`${cfg.id}-fill`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={spectralColor(cfg.max, cfg.id)} stopOpacity="0.42" />
           <stop offset="60%" stopColor="#FFFFBF" stopOpacity="0.18" />
-          <stop offset="100%" stopColor="#A50026" stopOpacity="0.04" />
+          <stop offset="100%" stopColor={spectralColor(cfg.min, cfg.id)} stopOpacity="0.04" />
         </linearGradient>
       </defs>
-      {[0.25, 0.5, 0.75].map((v) => {
-        const y = h - padY - v * (h - padY * 2);
+      {[0.25, 0.5, 0.75].map((p) => {
+        const y = h - padY - p * (h - padY * 2);
         return (
           <line
-            key={v}
+            key={p}
             x1={padX}
             x2={w - padX}
             y1={y}
@@ -501,7 +470,7 @@ function NdviCurve({ scenes, activeIso, suspectIds, showYearOverYear = true }) {
           opacity={0.6}
         />
       ))}
-      <path d={area} fill="url(#ndvi-fill)" />
+      <path d={area} fill={`url(#${cfg.id}-fill)`} />
       <path
         d={path}
         fill="none"
@@ -516,7 +485,7 @@ function NdviCurve({ scenes, activeIso, suspectIds, showYearOverYear = true }) {
           cx={xFor(p.t)}
           cy={yFor(p.v)}
           r={p.suspect ? 2.2 : 1.8}
-          fill={p.suspect ? "#FFFFFF" : "#104E3F"}
+          fill={p.suspect ? "#FFFFFF" : spectralColor(p.v, cfg.id)}
           stroke={p.suspect ? "#9CA3AF" : "none"}
           strokeWidth={p.suspect ? 1 : 0}
           opacity={p.suspect ? 0.85 : 0.55}
@@ -675,6 +644,7 @@ export function SatelliteWorkspace({ fields }) {
   // a Map<fieldId, item_id> in state so each field remembers its own
   // scrubber position when the user toggles between fields.
   const [activeByField, setActiveByField] = useState(new Map());
+  const [selectedIndex, setSelectedIndex] = useState("ndvi");
   const [showRaster, setShowRaster] = useState(false);
   const [rasterOpacity, setRasterOpacity] = useState(0.65);
   const [refreshingId, setRefreshingId] = useState(null);
@@ -719,9 +689,49 @@ export function SatelliteWorkspace({ fields }) {
     return out;
   }, [fieldIds, scenes, activeByField, latestGood]);
 
-  const selectedScenes = scenes.get(selectedFieldId) || [];
+  const selectedScenes = useMemo(
+    () => scenes.get(selectedFieldId) || [],
+    [scenes, selectedFieldId]
+  );
   const selectedActive = activeScenesByField.get(selectedFieldId) || null;
   const selectedField = withRings.find((f) => f.id === selectedFieldId) || null;
+  const selectedFieldPosition = selectedFieldId
+    ? withRings.findIndex((f) => f.id === selectedFieldId) + 1
+    : 0;
+  const selectedIndexConfig = spectralIndex(selectedIndex);
+  const selectedIndexSceneCount = useMemo(
+    () =>
+      selectedScenes.filter(
+        (s) =>
+          s.status === "ok" &&
+          Number.isFinite(spectralValue(s, selectedIndex)) &&
+          Number(s.valid_pixel_count || 0) > 0
+      ).length,
+    [selectedScenes, selectedIndex]
+  );
+  const selectedOkSceneCount = useMemo(
+    () => selectedScenes.filter((s) => s.status === "ok").length,
+    [selectedScenes]
+  );
+  const selectedSceneStatusCounts = useMemo(() => {
+    const counts = { ok: 0, pending: 0, noData: 0, error: 0 };
+    for (const scene of selectedScenes) {
+      if (scene.status === "ok") counts.ok += 1;
+      else if (scene.status === "pending") counts.pending += 1;
+      else if (scene.status === "no-data") counts.noData += 1;
+      else if (scene.status === "error") counts.error += 1;
+    }
+    return counts;
+  }, [selectedScenes]);
+  const selectedIndexNeedsBackfill =
+    selectedIndex !== "ndvi" &&
+    selectedOkSceneCount > 0 &&
+    selectedIndexSceneCount === 0;
+  const selectedHasOnlyPending =
+    selectedOkSceneCount === 0 && selectedSceneStatusCounts.pending > 0;
+  const selectedHasOnlyFailures =
+    selectedOkSceneCount === 0 &&
+    (selectedSceneStatusCounts.noData > 0 || selectedSceneStatusCounts.error > 0);
 
   // Phenology metrics for the selected field, computed off the
   // suspect-filtered ascending series. Recomputes when scenes or
@@ -783,15 +793,16 @@ export function SatelliteWorkspace({ fields }) {
     const out = {};
     for (const f of withRings) {
       const rec = activeScenesByField.get(f.id);
-      if (rec && Number.isFinite(rec.ndvi_mean) && rec.status === "ok") {
+      const value = spectralValue(rec, selectedIndex);
+      if (rec && Number.isFinite(value) && rec.status === "ok") {
         out[f.id] = {
-          value: rec.ndvi_mean.toFixed(2),
-          color: ndviColor(rec.ndvi_mean),
+          value: value.toFixed(2),
+          color: spectralColor(value, selectedIndex),
         };
       }
     }
     return out;
-  }, [isMobileView, withRings, activeScenesByField]);
+  }, [isMobileView, withRings, activeScenesByField, selectedIndex]);
 
   const mapCenter = useMemo(() => {
     const target = selectedField || withRings[0];
@@ -803,23 +814,24 @@ export function SatelliteWorkspace({ fields }) {
   const rasterOverlay = useMemo(() => {
     if (isMobileView) return null;
     if (!showRaster || !selectedActive?.item_id || selectedActive.status !== "ok") return null;
-    const url = buildNdviTileUrlFn({
+    const url = buildSpectralTileUrlFn({
       itemId: selectedActive.item_id,
       collection: selectedActive.collection || "sentinel-2-l2a",
-      colormap: NDVI_COLORMAP,
-      rescale: NDVI_RESCALE_PARAM,
+      index: selectedIndex,
+      colormap: selectedIndexConfig.colormap,
+      rescale: `${selectedIndexConfig.min},${selectedIndexConfig.max}`,
     });
     if (!url) return null;
     return [
       {
-        id: `ndvi-${selectedActive.item_id}`,
+        id: `${selectedIndex}-${selectedActive.item_id}`,
         opacity: rasterOpacity,
         minZoom: 8,
         maxZoom: 19,
         url,
       },
     ];
-  }, [isMobileView, showRaster, selectedActive, rasterOpacity]);
+  }, [isMobileView, showRaster, selectedActive, rasterOpacity, selectedIndex, selectedIndexConfig]);
 
   // Quality / freshness summary across all fields.
   const summary = useMemo(() => {
@@ -842,8 +854,11 @@ export function SatelliteWorkspace({ fields }) {
         continue;
       }
       okFields += 1;
-      medianAcc += rec.ndvi_mean;
-      medianN += 1;
+      const value = spectralValue(rec, selectedIndex);
+      if (Number.isFinite(value)) {
+        medianAcc += value;
+        medianN += 1;
+      }
       const t = new Date(rec.scene_datetime).getTime();
       if (Number.isFinite(t) && (mostRecent == null || t > mostRecent)) mostRecent = t;
     }
@@ -858,7 +873,7 @@ export function SatelliteWorkspace({ fields }) {
       median: medianN > 0 ? (medianAcc / medianN).toFixed(2) : "—",
       mostRecent: mostRecent ? new Date(mostRecent).toISOString() : null,
     };
-  }, [withRings, latestGood, scenes, suspectByField]);
+  }, [withRings, latestGood, scenes, suspectByField, selectedIndex]);
 
   // Anomaly flag list — fields whose latest NDVI is meaningfully below
   // the cohort median for this refresh window. Suspect (cloud-
@@ -873,18 +888,20 @@ export function SatelliteWorkspace({ fields }) {
     for (const f of withRings) {
       const rec = latestGood.get(f.id);
       if (!rec) continue;
-      const delta = rec.ndvi_mean - baseline;
+      const value = spectralValue(rec, selectedIndex);
+      if (!Number.isFinite(value)) continue;
+      const delta = value - baseline;
       if (delta < -0.1) {
         arr.push({
           id: f.id,
           name: f.name || "Unnamed field",
-          ndvi: rec.ndvi_mean,
+          value,
           delta,
         });
       }
     }
     return arr.sort((a, b) => a.delta - b.delta).slice(0, 4);
-  }, [withRings, latestGood, summary]);
+  }, [withRings, latestGood, summary, selectedIndex]);
 
   const handleRefresh = useCallback(
     async (fieldId, { force = false, lookbackDays } = {}) => {
@@ -981,7 +998,7 @@ export function SatelliteWorkspace({ fields }) {
       header={
         <SectionHeader
           kicker="Remote sensing"
-          title="Vegetation indices"
+          title="Satellite insights"
           description="Sentinel-2 optical imagery — NDVI, EVI, NDWI, NDMI, NDRE, SAVI and NBR per field. These low-cost indices support crop-stage, moisture, canopy, and stress warnings."
           actions={headerActions}
         />
@@ -991,8 +1008,8 @@ export function SatelliteWorkspace({ fields }) {
         <Card padding={24}>
           <EmptyState
             kicker="No fields"
-            title="Map boundaries to unlock NDVI"
-            description="NDVI ingests against your stored field boundaries. Map at least one field, then come back here."
+            title="Map boundaries to unlock satellite insights"
+            description="Sentinel-2 insights run against your stored field boundaries. Map at least one field, then come back here."
           />
         </Card>
       ) : (
@@ -1040,10 +1057,32 @@ export function SatelliteWorkspace({ fields }) {
               }}
             >
               <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
-                <LegendSwatch color={ndviColor(0.05)} label="Stressed" />
-                <LegendSwatch color={ndviColor(0.45)} label="Mid" />
-                <LegendSwatch color={ndviColor(0.8)} label="Canopy" />
+                <LegendSwatch color={spectralColor(selectedIndexConfig.min, selectedIndex)} label={selectedIndexConfig.lowLabel} />
+                <LegendSwatch color={spectralColor((selectedIndexConfig.min + selectedIndexConfig.max) / 2, selectedIndex)} label={selectedIndexConfig.midLabel} />
+                <LegendSwatch color={spectralColor(selectedIndexConfig.max, selectedIndex)} label={selectedIndexConfig.highLabel} />
               </div>
+              <select
+                value={selectedIndex}
+                onChange={(e) => setSelectedIndex(e.target.value)}
+                title={selectedIndexConfig.interpretation}
+                style={{
+                  fontFamily: fonts.mono,
+                  fontSize: 10,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: brand.forest,
+                  border: `1px solid ${brand.border}`,
+                  borderRadius: radius.base,
+                  background: brand.white,
+                  padding: "5px 8px",
+                }}
+              >
+                {SPECTRAL_INDEX_LIST.map((idx) => (
+                  <option key={idx.id} value={idx.id}>
+                    {idx.label}
+                  </option>
+                ))}
+              </select>
               <label
                 style={{
                   display: "flex",
@@ -1064,7 +1103,7 @@ export function SatelliteWorkspace({ fields }) {
                   disabled={!selectedActive}
                   style={{ accentColor: brand.forest }}
                 />
-                NDVI raster
+                {selectedIndexConfig.label} raster
               </label>
               {showRaster && selectedActive ? (
                 <div
@@ -1097,7 +1136,7 @@ export function SatelliteWorkspace({ fields }) {
                   />
                 </div>
               ) : null}
-              <Pill tone="info">Median NDVI {summary.median}</Pill>
+              <Pill tone="info">Median {selectedIndexConfig.label} {summary.median}</Pill>
               {summary.pendingFields > 0 ? (
                 <Pill tone="warn">{summary.pendingFields} pending</Pill>
               ) : null}
@@ -1117,46 +1156,173 @@ export function SatelliteWorkspace({ fields }) {
             }}
           >
             <Card padding={12}>
+              <div
+                className="tilth-sat-field-picker"
+                style={{
+                  display: "grid",
+                  gap: 6,
+                  marginBottom: 10,
+                }}
+              >
+                <label
+                  htmlFor="tilth-satellite-field-select"
+                  style={{
+                    fontFamily: fonts.mono,
+                    fontSize: 10,
+                    letterSpacing: "0.14em",
+                    textTransform: "uppercase",
+                    color: brand.muted,
+                  }}
+                >
+                  Field to inspect
+                </label>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(0, 1fr) auto",
+                    gap: 8,
+                    alignItems: "center",
+                  }}
+                >
+                  <select
+                    id="tilth-satellite-field-select"
+                    value={selectedFieldId || ""}
+                    onChange={(e) => setSelectedFieldId(e.target.value || null)}
+                    style={{
+                      width: "100%",
+                      minWidth: 0,
+                      boxSizing: "border-box",
+                      fontFamily: fonts.sans,
+                      fontSize: 14,
+                      color: brand.forest,
+                      border: `1px solid ${brand.border}`,
+                      borderRadius: radius.base,
+                      background: brand.white,
+                      padding: "10px 12px",
+                    }}
+                  >
+                    {withRings.map((field) => (
+                      <option key={field.id} value={field.id}>
+                        {field.name || "Unnamed field"}
+                      </option>
+                    ))}
+                  </select>
+                  <Pill tone="neutral">
+                    {selectedFieldPosition || "—"}/{withRings.length}
+                  </Pill>
+                </div>
+                <Body size="sm" color={brand.bodySoft} style={{ lineHeight: 1.45 }}>
+                  Choose the field here, then scrub scenes below. On desktop you can also click a field on the map.
+                </Body>
+              </div>
               <Subpanel
                 kicker={selectedField ? "Selected field" : "Pick a field"}
                 title={selectedField?.name || "—"}
                 actions={
                   selectedActive ? (
                     <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
-                      <Pill tone="neutral">NDVI {fmtNdvi(selectedActive.ndvi_mean)}</Pill>
-                      {Number.isFinite(selectedActive.evi_mean) && (
-                        <Pill tone="neutral" title="Enhanced Vegetation Index — more sensitive in dense canopy">EVI {fmtNdvi(selectedActive.evi_mean)}</Pill>
-                      )}
-                      {Number.isFinite(selectedActive.ndwi_mean) && (
-                        <Pill tone={selectedActive.ndwi_mean < -0.3 ? "warn" : "neutral"} title="Normalised Difference Water Index — canopy water content">NDWI {fmtNdvi(selectedActive.ndwi_mean)}</Pill>
-                      )}
-                      {Number.isFinite(selectedActive.ndmi_mean) && (
-                        <Pill tone={selectedActive.ndmi_mean < -0.1 ? "warn" : "neutral"} title="Normalised Difference Moisture Index — canopy/soil moisture">NDMI {fmtNdvi(selectedActive.ndmi_mean)}</Pill>
-                      )}
-                      {Number.isFinite(selectedActive.ndre_mean) && (
-                        <Pill tone={selectedActive.ndre_mean < 0.18 ? "warn" : "neutral"} title="Normalised Difference Red Edge — chlorophyll/nitrogen stress signal">NDRE {fmtNdvi(selectedActive.ndre_mean)}</Pill>
-                      )}
-                      {Number.isFinite(selectedActive.savi_mean) && (
-                        <Pill tone={selectedActive.savi_mean < 0.22 ? "warn" : "neutral"} title="Soil Adjusted Vegetation Index — useful in sparse canopy and early growth">SAVI {fmtNdvi(selectedActive.savi_mean)}</Pill>
-                      )}
-                      {Number.isFinite(selectedActive.nbr_mean) && (
-                        <Pill tone="neutral" title="Normalised Burn Ratio — useful for residue, exposed soil, and damage context">NBR {fmtNdvi(selectedActive.nbr_mean)}</Pill>
-                      )}
+                      {spectralSummary(selectedActive).map((idx) => (
+                        <Pill key={idx.id} tone={spectralTone(idx.value, idx.id)} title={idx.interpretation}>
+                          {idx.label} {formatSpectralValue(idx.value)}
+                        </Pill>
+                      ))}
                     </span>
                   ) : null
                 }
                 style={{ marginBottom: 0 }}
               >
-                <NdviCurve
+                <IndexCurve
                   scenes={selectedScenes}
                   activeIso={selectedActive?.scene_datetime || null}
+                  indexId={selectedIndex}
+                  emptyMessage={
+                    selectedIndexNeedsBackfill
+                      ? `${selectedIndexConfig.label} history needs re-ingest`
+                      : selectedHasOnlyPending
+                        ? "Ingest in progress"
+                        : selectedHasOnlyFailures
+                          ? "No valid pixels returned"
+                          : "No usable scenes yet"
+                  }
                   suspectIds={
                     suspectByField.get(selectedFieldId) || new Set()
                   }
                 />
+                {selectedIndexNeedsBackfill ? (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      padding: "8px 10px",
+                      border: `1px solid ${brand.warn}55`,
+                      borderRadius: radius.base,
+                      background: "#FFF7E8",
+                      display: "grid",
+                      gap: 6,
+                    }}
+                  >
+                    <Body size="sm" style={{ color: brand.bodySoft, lineHeight: 1.45 }}>
+                      The raster can render {selectedIndexConfig.label} live, but the graph needs
+                      cached {selectedIndexConfig.label} means for each scene. This field has
+                      older cached rows, so force re-ingest once to populate the new index columns.
+                    </Body>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        if (
+                          !window.confirm(
+                            `This will delete cached Sentinel-2 rows for ${selectedField?.name || "this field"} and re-run ingest so ${selectedIndexConfig.label} history can be graphed. Continue?`
+                          )
+                        )
+                          return;
+                        handleRefresh(selectedFieldId, { force: true });
+                      }}
+                      disabled={!selectedFieldId || refreshingId != null}
+                    >
+                      Populate {selectedIndexConfig.label} history
+                    </Button>
+                  </div>
+                ) : null}
+                {selectedHasOnlyPending ? (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      padding: "8px 10px",
+                      border: `1px solid ${brand.border}`,
+                      borderRadius: radius.base,
+                      background: brand.bgSection,
+                    }}
+                  >
+                    <Body size="sm" style={{ color: brand.bodySoft, lineHeight: 1.45 }}>
+                      Sentinel-2 ingest is still processing this field. The graph will appear
+                      as soon as at least one scene is written as usable.
+                    </Body>
+                  </div>
+                ) : null}
+                {selectedHasOnlyFailures ? (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      padding: "8px 10px",
+                      border: `1px solid ${brand.warn}55`,
+                      borderRadius: radius.base,
+                      background: "#FFF7E8",
+                    }}
+                  >
+                    <Body size="sm" style={{ color: brand.bodySoft, lineHeight: 1.45 }}>
+                      The latest ingest returned {selectedSceneStatusCounts.noData} no-data
+                      scene(s) and {selectedSceneStatusCounts.error} error scene(s) for this field.
+                      Try refresh again, or backfill two years to find clearer scenes.
+                    </Body>
+                  </div>
+                ) : null}
+                <Body size="sm" color={brand.bodySoft} style={{ marginTop: 6, lineHeight: 1.45 }}>
+                  <strong>{selectedIndexConfig.label}:</strong> {selectedIndexConfig.interpretation}
+                </Body>
                 <SceneScrubber
                   scenes={selectedScenes}
                   activeItemId={selectedActive?.item_id || null}
+                  indexId={selectedIndex}
                   suspectIds={
                     suspectByField.get(selectedFieldId) || new Set()
                   }
@@ -1171,9 +1337,18 @@ export function SatelliteWorkspace({ fields }) {
                 />
                 <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
                   <Pill tone="neutral">
-                    {selectedScenes.filter((s) => s.status === "ok").length} usable
-                    scenes
+                    {selectedIndexSceneCount || selectedOkSceneCount} usable
+                    {selectedIndexSceneCount ? ` ${selectedIndexConfig.label}` : ""} scenes
                   </Pill>
+                  {selectedSceneStatusCounts.pending > 0 ? (
+                    <Pill tone="info">{selectedSceneStatusCounts.pending} pending</Pill>
+                  ) : null}
+                  {selectedSceneStatusCounts.noData > 0 ? (
+                    <Pill tone="warn">{selectedSceneStatusCounts.noData} no-data</Pill>
+                  ) : null}
+                  {selectedSceneStatusCounts.error > 0 ? (
+                    <Pill tone="warn">{selectedSceneStatusCounts.error} errors</Pill>
+                  ) : null}
                   <Pill tone="info">Sentinel-2 L2A</Pill>
                   {selectedActive ? (
                     <Pill tone="neutral">{fmtDate(selectedActive.scene_datetime)}</Pill>
@@ -1574,7 +1749,7 @@ function PhenologyCard({ phenology }) {
   );
 }
 
-function SceneScrubber({ scenes, activeItemId, onPick, suspectIds }) {
+function SceneScrubber({ scenes, activeItemId, onPick, suspectIds, indexId = "ndvi" }) {
   const suspect = suspectIds || new Set();
   const usable = useMemo(
     () => (scenes || []).filter((s) => s.status === "ok").slice().reverse(),
@@ -1617,16 +1792,11 @@ function SceneScrubber({ scenes, activeItemId, onPick, suspectIds }) {
         const cloud = Number.isFinite(s.scene_cloud_pct)
           ? `${Math.round(s.scene_cloud_pct)}%`
           : "";
+        const idxValue = spectralValue(s, indexId);
         const titleParts = [
           fmtDate(s.scene_datetime),
-          `NDVI ${fmtNdvi(s.ndvi_mean)}`,
+          ...spectralSummary(s).map((idx) => `${idx.label} ${formatSpectralValue(idx.value)}`),
         ];
-        if (Number.isFinite(s.evi_mean)) titleParts.push(`EVI ${fmtNdvi(s.evi_mean)}`);
-        if (Number.isFinite(s.ndwi_mean)) titleParts.push(`NDWI ${fmtNdvi(s.ndwi_mean)}`);
-        if (Number.isFinite(s.ndmi_mean)) titleParts.push(`NDMI ${fmtNdvi(s.ndmi_mean)}`);
-        if (Number.isFinite(s.ndre_mean)) titleParts.push(`NDRE ${fmtNdvi(s.ndre_mean)}`);
-        if (Number.isFinite(s.savi_mean)) titleParts.push(`SAVI ${fmtNdvi(s.savi_mean)}`);
-        if (Number.isFinite(s.nbr_mean)) titleParts.push(`NBR ${fmtNdvi(s.nbr_mean)}`);
         if (cloud) titleParts.push(`cloud ${cloud}`);
         if (isSuspect) titleParts.push("⚠ likely cloud-contaminated");
         return (
@@ -1669,7 +1839,7 @@ function SceneScrubber({ scenes, activeItemId, onPick, suspectIds }) {
                 borderRadius: 2,
                 background: isSuspect
                   ? "repeating-linear-gradient(45deg, #D4D4D8 0 3px, #F4F4F5 3px 6px)"
-                  : ndviColor(s.ndvi_mean),
+                  : spectralColor(idxValue, indexId),
                 border: `1px solid ${brand.border}`,
               }}
               aria-hidden

@@ -106,26 +106,6 @@ async function fetchExistingItemIds(fieldId) {
   return out;
 }
 
-/**
- * Wipe every cached row for a field. Used by force-refresh — typically
- * after a methodology change (e.g. switching the NDVI expression to
- * include SCL cloud masking) so the next ingest re-computes everything
- * from scratch instead of skipping `status='ok'` rows.
- */
-async function clearFieldRows(fieldId) {
-  const admin = adminClient();
-  if (!admin) return;
-  const { error } = await admin
-    .from("tilth_field_ndvi")
-    .delete()
-    .eq("field_id", fieldId);
-  if (error) {
-    console.warn(
-      `[sentinel-ingest] could not clear existing rows for field ${fieldId}: ${error.message}`
-    );
-  }
-}
-
 async function upsertScenePending({ fieldId, itemId, sceneDatetime, sceneCloudPct }) {
   const admin = adminClient();
   if (!admin) return;
@@ -211,10 +191,6 @@ async function runJob(job) {
   if (!feature) {
     console.warn(`[sentinel-ingest] field ${fieldId} could not be converted to GeoJSON`);
     return { searched: 0, ingested: 0, skipped: 0, errors: 0 };
-  }
-
-  if (force) {
-    await clearFieldRows(fieldId);
   }
 
   const endDate = new Date();

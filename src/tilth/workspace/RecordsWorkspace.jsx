@@ -13,6 +13,7 @@ import {
   Stat,
   WorkspaceFrame,
 } from "../ui/primitives.jsx";
+import { useMediaQuery } from "../ui/mobileUx.js";
 import { tilthStore, useLocalValue } from "../state/localStore.js";
 import { addDays, cancelFarmTaskBySourceKey, titleWithSubject, upsertFarmTask } from "../../lib/farmTaskAutomation.js";
 
@@ -323,6 +324,8 @@ export function RecordsWorkspace({ farm, fields, onNavigate }) {
   const [newProductCategory, setNewProductCategory] = useState(DEFAULT_CUSTOM_PRODUCT.category);
   const [newProductUnit, setNewProductUnit] = useState(DEFAULT_CUSTOM_PRODUCT.unit);
   const [newProductAi, setNewProductAi] = useState("");
+  const isMobileForm = useMediaQuery("(max-width: 760px)");
+  const [showRecordForm, setShowRecordForm] = useState(false);
 
   // Filter & sort
   const [filterField, setFilterField] = useState("all");
@@ -455,6 +458,7 @@ export function RecordsWorkspace({ farm, fields, onNavigate }) {
     setStartTime("");
     setEndTime("");
     setWindDirection("");
+    if (isMobileForm) setShowRecordForm(false);
   };
 
   const startEdit = (rec) => {
@@ -470,6 +474,7 @@ export function RecordsWorkspace({ farm, fields, onNavigate }) {
     setWindDirection(rec.windDirection || "");
     setOperator(rec.operator || "");
     setNotes(rec.notes || "");
+    setShowRecordForm(true);
   };
 
   const cancelEdit = () => {
@@ -481,6 +486,7 @@ export function RecordsWorkspace({ farm, fields, onNavigate }) {
     setWindDirection("");
     setIsBlend(false);
     setBlendProducts([{ productId: productId || PRODUCTS[0].id, rate: productById(productId, allProducts).defaultRate }]);
+    if (isMobileForm) setShowRecordForm(false);
   };
 
   const removeRecord = (id) => {
@@ -579,6 +585,7 @@ export function RecordsWorkspace({ farm, fields, onNavigate }) {
           title="Inputs & spray diary"
           description="Track fertiliser, sprays, manures and seed per field. NMax validation, NVZ closed-period checks, PHI countdowns and compliance flags."
           actions={<>
+            <Button variant="primary" size="sm" onClick={() => setShowRecordForm(true)}>{editId ? "Edit record" : "Log record"}</Button>
             <Button variant="secondary" size="sm" onClick={() => setShowImport(!showImport)}>{showImport ? "Cancel import" : "Import CSV"}</Button>
             <Button variant="secondary" size="sm" onClick={exportCsv} disabled={!records.length}>Export CSV</Button>
           </>}
@@ -601,7 +608,7 @@ export function RecordsWorkspace({ farm, fields, onNavigate }) {
       ) : (
         <div className="tilth-records-layout" style={{ flex: "1 1 auto", minHeight: 0, display: "grid", gridTemplateColumns: "340px minmax(0, 1fr)", gap: 12, overflow: "hidden" }}>
           {/* Left: form + analytics */}
-          <div className="tilth-records-form-column tilth-scroll" style={{ display: "flex", flexDirection: "column", minHeight: 0, gap: 10, overflowY: "auto", paddingRight: 4 }}>
+          <div className={`tilth-records-form-column tilth-scroll ${showRecordForm || editId ? "tilth-mobile-sheet-open" : ""}`} style={{ display: "flex", flexDirection: "column", minHeight: 0, gap: 10, overflowY: "auto", paddingRight: 4 }}>
             {/* CSV import */}
             {showImport && (
               <Card padding={12}>
@@ -738,7 +745,7 @@ export function RecordsWorkspace({ farm, fields, onNavigate }) {
 
               <div className="tilth-mobile-actions" style={{ display: "flex", gap: 8 }}>
                 <Button variant="primary" size="sm" onClick={saveRecord} disabled={!canSave}>{editId ? "Update" : "Save record"}</Button>
-                {editId && <Button variant="secondary" size="sm" onClick={cancelEdit}>Cancel</Button>}
+                {(editId || showRecordForm) && <Button variant="secondary" size="sm" onClick={cancelEdit}>Cancel</Button>}
               </div>
             </Card>
 
@@ -789,7 +796,7 @@ export function RecordsWorkspace({ farm, fields, onNavigate }) {
               <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
                 <Kicker>Diary</Kicker>
               </div>
-              <div className="tilth-scroll" style={{ display: "grid", gap: 4, minHeight: 0, overflowY: "auto", paddingRight: 2 }}>
+              <div className="tilth-records-diary-list tilth-scroll" style={{ display: "grid", gap: 4, minHeight: 0, overflowY: "auto", paddingRight: 2 }}>
                 {displayRecords.length ? displayRecords.map((r) => (
                   <RecordRow key={r.id} record={r} products={allProducts} fieldName={fieldLookup.get(r.fieldId) || r.fieldName || "—"} onDelete={() => removeRecord(r.id)} onEdit={() => startEdit(r)} />
                 )) : (
@@ -857,6 +864,16 @@ export function RecordsWorkspace({ farm, fields, onNavigate }) {
           .tilth-records-diary-column {
             overflow: visible !important;
             padding-right: 0 !important;
+            min-height: auto !important;
+          }
+          .tilth-records-diary-list,
+          .tilth-records-diary-list.tilth-scroll {
+            min-height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            padding-right: 0 !important;
+          }
+          .tilth-records-diary-column > .tilth-mobile-card {
             min-height: auto !important;
           }
           .tilth-records-stats {

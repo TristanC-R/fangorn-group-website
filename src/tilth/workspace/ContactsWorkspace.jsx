@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { brand, fonts, inputStyle, radius } from "../ui/theme.js";
 import {
   Body,
@@ -7,10 +7,12 @@ import {
   EmptyState,
   FieldLabel,
   Kicker,
+  MobileSheet,
   Pill,
   SectionHeader,
   WorkspaceFrame,
 } from "../ui/primitives.jsx";
+import { useMediaQuery } from "../ui/mobileUx.js";
 import { useLocalValue } from "../state/localStore.js";
 
 const ROLES = [
@@ -106,6 +108,8 @@ export function ContactsWorkspace({ farm }) {
   const [editingId, setEditingId] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
+  const isMobileForm = useMediaQuery("(max-width: 760px)");
+  const nameInputRef = useRef(null);
 
   const patch = (key, val) => setForm((f) => ({ ...f, [key]: val }));
 
@@ -223,6 +227,104 @@ export function ContactsWorkspace({ farm }) {
     [groupedContacts]
   );
 
+  const contactForm = (
+    <>
+      <Kicker style={{ marginBottom: 10 }}>
+        {editingId ? "Edit contact" : "New contact"}
+      </Kicker>
+      <div className="tilth-contacts-form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div>
+          <FieldLabel>Name</FieldLabel>
+          <input
+            ref={nameInputRef}
+            value={form.name}
+            onChange={(e) => patch("name", e.target.value)}
+            placeholder="e.g. John Smith"
+            style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+          />
+        </div>
+        <div>
+          <FieldLabel>Company</FieldLabel>
+          <input
+            value={form.company}
+            onChange={(e) => patch("company", e.target.value)}
+            placeholder="e.g. AgriChem Ltd"
+            style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+          />
+        </div>
+        <div>
+          <FieldLabel>Role</FieldLabel>
+          <select
+            value={form.role}
+            onChange={(e) => patch("role", e.target.value)}
+            style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+          >
+            {ROLES.map((r) => (
+              <option key={r} value={r}>
+                {ROLE_LABELS[r]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <FieldLabel>Phone</FieldLabel>
+          <input
+            value={form.phone}
+            onChange={(e) => patch("phone", e.target.value)}
+            placeholder="e.g. 07700 900000"
+            style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+          />
+        </div>
+        <div>
+          <FieldLabel>Email</FieldLabel>
+          <input
+            type="email"
+            value={form.email}
+            onChange={(e) => patch("email", e.target.value)}
+            placeholder="e.g. john@example.com"
+            style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+          />
+        </div>
+        <div>
+          <FieldLabel>Address</FieldLabel>
+          <input
+            value={form.address}
+            onChange={(e) => patch("address", e.target.value)}
+            placeholder="e.g. Farm Lane, Hereford HR1 1AA"
+            style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
+          />
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <FieldLabel>Notes (optional)</FieldLabel>
+          <textarea
+            value={form.notes}
+            onChange={(e) => patch("notes", e.target.value)}
+            rows={2}
+            placeholder="Any additional notes..."
+            style={{ ...inputStyle, padding: "8px 10px", fontSize: 13, resize: "vertical" }}
+          />
+        </div>
+      </div>
+    </>
+  );
+
+  const contactFormActions = (
+    <div className="tilth-contacts-actions" style={{ display: "flex", gap: 8, marginTop: isMobileForm ? 0 : 12 }}>
+      <Button
+        variant="primary"
+        size="sm"
+        onClick={handleSave}
+        disabled={!form.name.trim()}
+        style={isMobileForm ? { width: "100%" } : undefined}
+      >
+        {editingId ? "Save changes" : "Add contact"}
+      </Button>
+      <Button variant="ghost" size="sm" onClick={resetForm} style={isMobileForm ? { width: "100%" } : undefined}>
+        Cancel
+      </Button>
+    </div>
+  );
+
   return (
     <WorkspaceFrame
       header={
@@ -271,96 +373,10 @@ export function ContactsWorkspace({ farm }) {
           }}
         >
           {/* Add/edit form */}
-          {showForm && (
+          {showForm && !isMobileForm && (
             <Card className="tilth-contacts-form-card" padding={14}>
-              <Kicker style={{ marginBottom: 10 }}>
-                {editingId ? "Edit contact" : "New contact"}
-              </Kicker>
-              <div className="tilth-contacts-form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <div>
-                  <FieldLabel>Name</FieldLabel>
-                  <input
-                    value={form.name}
-                    onChange={(e) => patch("name", e.target.value)}
-                    placeholder="e.g. John Smith"
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
-                  />
-                </div>
-                <div>
-                  <FieldLabel>Company</FieldLabel>
-                  <input
-                    value={form.company}
-                    onChange={(e) => patch("company", e.target.value)}
-                    placeholder="e.g. AgriChem Ltd"
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
-                  />
-                </div>
-                <div>
-                  <FieldLabel>Role</FieldLabel>
-                  <select
-                    value={form.role}
-                    onChange={(e) => patch("role", e.target.value)}
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
-                  >
-                    {ROLES.map((r) => (
-                      <option key={r} value={r}>
-                        {ROLE_LABELS[r]}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <FieldLabel>Phone</FieldLabel>
-                  <input
-                    value={form.phone}
-                    onChange={(e) => patch("phone", e.target.value)}
-                    placeholder="e.g. 07700 900000"
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
-                  />
-                </div>
-                <div>
-                  <FieldLabel>Email</FieldLabel>
-                  <input
-                    type="email"
-                    value={form.email}
-                    onChange={(e) => patch("email", e.target.value)}
-                    placeholder="e.g. john@example.com"
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
-                  />
-                </div>
-                <div>
-                  <FieldLabel>Address</FieldLabel>
-                  <input
-                    value={form.address}
-                    onChange={(e) => patch("address", e.target.value)}
-                    placeholder="e.g. Farm Lane, Hereford HR1 1AA"
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13 }}
-                  />
-                </div>
-                <div style={{ gridColumn: "1 / -1" }}>
-                  <FieldLabel>Notes (optional)</FieldLabel>
-                  <textarea
-                    value={form.notes}
-                    onChange={(e) => patch("notes", e.target.value)}
-                    rows={2}
-                    placeholder="Any additional notes…"
-                    style={{ ...inputStyle, padding: "8px 10px", fontSize: 13, resize: "vertical" }}
-                  />
-                </div>
-              </div>
-              <div className="tilth-contacts-actions" style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={handleSave}
-                  disabled={!form.name.trim()}
-                >
-                  {editingId ? "Save changes" : "Add contact"}
-                </Button>
-                <Button variant="ghost" size="sm" onClick={resetForm}>
-                  Cancel
-                </Button>
-              </div>
+              {contactForm}
+              {contactFormActions}
             </Card>
           )}
 
@@ -800,6 +816,18 @@ export function ContactsWorkspace({ farm }) {
           </Card>
         </div>
       </div>
+
+      <MobileSheet
+        open={showForm && isMobileForm}
+        kicker="Directory"
+        title={editingId ? "Edit contact" : "New contact"}
+        description="Add the details you need, then save to return to the directory."
+        onClose={resetForm}
+        initialFocusRef={nameInputRef}
+        footer={contactFormActions}
+      >
+        {contactForm}
+      </MobileSheet>
 
       <style>{`
         @media (max-width: 1100px) {

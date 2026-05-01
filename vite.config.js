@@ -21,6 +21,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     host: true,
+    allowedHosts: ["tilth.fangorn.earth"],
     watch: {
       ignored: [
         "**/node_modules/**",

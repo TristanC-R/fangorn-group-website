@@ -854,7 +854,7 @@ function AddTaskForm({ onSave, onCancel, fields }) {
   };
 
   return (
-    <Card className="tilth-mobile-card" padding={14}>
+    <Card className="tilth-mobile-card tilth-calendar-form-card" padding={14}>
       <Kicker style={{ marginBottom: 10 }}>New task</Kicker>
       <div style={{ display: "grid", gap: 8 }}>
         <FormField label="Title">

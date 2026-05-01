@@ -1,5 +1,6 @@
-import { Fragment } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { brand, fonts, radius, shadow } from "./theme.js";
+import { useMediaQuery } from "./mobileUx.js";
 
 /**
  * Small overline label. Matches the `kicker` motif used across the Fangorn
@@ -279,6 +280,184 @@ export function Button({
     <button type={type || "button"} disabled={disabled} onClick={onClick} style={base} {...rest}>
       {children}
     </button>
+  );
+}
+
+export function MobileSheet({
+  open,
+  title,
+  kicker,
+  description,
+  children,
+  footer,
+  onClose,
+  initialFocusRef,
+  closeLabel = "Close",
+}) {
+  const isMobile = useMediaQuery("(max-width: 760px)");
+  const panelRef = useRef(null);
+  const previousFocusRef = useRef(null);
+
+  useEffect(() => {
+    if (!open || !isMobile) return undefined;
+    previousFocusRef.current = document.activeElement;
+    const prevBody = document.body.style.overflow;
+    const prevHtml = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    const focusTimer = window.setTimeout(() => {
+      const focusTarget =
+        initialFocusRef?.current ||
+        panelRef.current?.querySelector?.("input, select, textarea, button, a[href]");
+      focusTarget?.focus?.({ preventScroll: true });
+    }, 80);
+
+    const onKey = (event) => {
+      if (event.key === "Escape") onClose?.();
+    };
+    window.addEventListener("keydown", onKey);
+
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevBody;
+      document.documentElement.style.overflow = prevHtml;
+      previousFocusRef.current?.focus?.({ preventScroll: true });
+    };
+  }, [initialFocusRef, isMobile, onClose, open]);
+
+  if (!open || !isMobile) return null;
+
+  return (
+    <div
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose?.();
+      }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 3000,
+        display: "flex",
+        alignItems: "flex-end",
+        justifyContent: "center",
+        padding: "max(12px, env(safe-area-inset-top, 0px)) 10px max(10px, env(safe-area-inset-bottom, 0px))",
+        background: "rgba(14, 42, 36, 0.38)",
+        boxSizing: "border-box",
+      }}
+    >
+      <section
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title || kicker || "Form"}
+        style={{
+          width: "100%",
+          maxHeight: "min(88dvh, 760px)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          border: `1px solid ${brand.border}`,
+          borderRadius: "16px 16px 8px 8px",
+          background: brand.white,
+          boxShadow: "0 -18px 70px rgba(14,42,36,0.22)",
+        }}
+      >
+        <header
+          style={{
+            flex: "0 0 auto",
+            padding: "16px 16px 12px",
+            borderBottom: `1px solid ${brand.border}`,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 12,
+          }}
+        >
+          <div style={{ minWidth: 0, flex: 1 }}>
+            {kicker ? <Kicker style={{ marginBottom: 5 }}>{kicker}</Kicker> : null}
+            {title ? <Headline size="sm" style={{ fontSize: 24 }}>{title}</Headline> : null}
+            {description ? <Body size="sm" style={{ marginTop: 6, lineHeight: 1.5 }}>{description}</Body> : null}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={closeLabel}
+            style={{
+              flex: "0 0 auto",
+              width: 44,
+              height: 44,
+              border: `1px solid ${brand.border}`,
+              borderRadius: radius.lg,
+              background: brand.bgSection,
+              color: brand.forest,
+              cursor: "pointer",
+              fontSize: 24,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </header>
+        <div
+          className="tilth-scroll"
+          style={{
+            flex: "1 1 auto",
+            minHeight: 0,
+            overflowY: "auto",
+            overflowX: "hidden",
+            padding: 16,
+            WebkitOverflowScrolling: "touch",
+          }}
+        >
+          {children}
+        </div>
+        {footer ? (
+          <footer
+            style={{
+              flex: "0 0 auto",
+              display: "grid",
+              gap: 8,
+              padding: "12px 16px max(16px, env(safe-area-inset-bottom, 0px))",
+              borderTop: `1px solid ${brand.border}`,
+              background: brand.white,
+            }}
+          >
+            {footer}
+          </footer>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+export function ConfirmDialog({
+  open,
+  title = "Are you sure?",
+  description,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  onConfirm,
+  onCancel,
+  danger = false,
+}) {
+  return (
+    <MobileSheet
+      open={open}
+      title={title}
+      description={description}
+      onClose={onCancel}
+      footer={
+        <>
+          <Button variant={danger ? "danger" : "primary"} onClick={onConfirm} style={{ width: "100%" }}>
+            {confirmLabel}
+          </Button>
+          <Button variant="secondary" onClick={onCancel} style={{ width: "100%" }}>
+            {cancelLabel}
+          </Button>
+        </>
+      }
+    />
   );
 }
 

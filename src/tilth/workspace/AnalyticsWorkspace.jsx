@@ -17,6 +17,7 @@ import {
   scoreColor,
   STAGE_LABELS,
 } from "../../lib/cropHealth.js";
+import { SPECTRAL_INDEX_LIST, formatSpectralValue } from "../../lib/spectralIndices.js";
 
 const N_FRACTIONS = {
   nitram: 0.345,
@@ -131,6 +132,7 @@ export function AnalyticsWorkspace({ farm, fields, farmHealth }) {
         stage: h?.stage || null,
         trend: h?.trend || null,
         ndviMean: h?.metrics?.ndviMean ?? null,
+        spectral: h?.metrics?.spectral || {},
         ndviSlope: h?.metrics?.ndviSlope14d ?? null,
         vhDb: h?.metrics?.vhMeanDb ?? null,
         flags: h?.flags || [],
@@ -202,11 +204,12 @@ export function AnalyticsWorkspace({ farm, fields, farmHealth }) {
 
   const exportCsv = () => {
     if (!rows.length) return;
-    const header = ["field", "crop", "soil", "area_ha", "health_score", "ndvi_latest", "trend", "n_kg_ha", "sprays", `yield_t_ha_${year}`, "scheme", "stage", "flags"];
+    const header = ["field", "crop", "soil", "area_ha", "health_score", ...SPECTRAL_INDEX_LIST.map((idx) => `${idx.id}_latest`), "trend", "n_kg_ha", "sprays", `yield_t_ha_${year}`, "scheme", "stage", "flags"];
     const esc = (v) => { if (v == null) return ""; const s = String(v); return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s; };
     const lines = [header.join(",")];
     for (const r of rows) {
-      lines.push([r.name, r.crop || "", r.soil || "", r.area.toFixed(2), Number.isFinite(r.score) ? r.score : "", Number.isFinite(r.ndviMean) ? r.ndviMean.toFixed(3) : "", r.trend || "", r.nPerHa.toFixed(1), r.sprays, Number.isFinite(r.yieldT) ? r.yieldT.toFixed(2) : "", r.schemeCode || "", r.stage || "", r.flags.join("; ")].map(esc).join(","));
+      const spectralCells = SPECTRAL_INDEX_LIST.map((idx) => Number.isFinite(r.spectral?.[idx.id]) ? r.spectral[idx.id].toFixed(3) : "");
+      lines.push([r.name, r.crop || "", r.soil || "", r.area.toFixed(2), Number.isFinite(r.score) ? r.score : "", ...spectralCells, r.trend || "", r.nPerHa.toFixed(1), r.sprays, Number.isFinite(r.yieldT) ? r.yieldT.toFixed(2) : "", r.schemeCode || "", r.stage || "", r.flags.join("; ")].map(esc).join(","));
     }
     triggerDownload(`tilth-analytics-${farmId || "farm"}-${year}.csv`, "text/csv", lines.join("\n"));
   };
@@ -281,7 +284,7 @@ export function AnalyticsWorkspace({ farm, fields, farmHealth }) {
               <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: fonts.sans, fontSize: 12, minWidth: 860 }}>
                 <thead>
                   <tr style={{ background: brand.bgSection }}>
-                    {["Field", "Crop", "Soil", "ha", "Score", "NDVI", "Trend", "Stage", "N kg/ha", "Sprays", "Yield", "Scheme"].map((h) => (
+                    {["Field", "Crop", "Soil", "ha", "Score", "Indices", "Trend", "Stage", "N kg/ha", "Sprays", "Yield", "Scheme"].map((h) => (
                       <th key={h} style={{ ...thStyle, textAlign: h === "Field" ? "left" : "center" }}>{h}</th>
                     ))}
                   </tr>
@@ -300,7 +303,15 @@ export function AnalyticsWorkspace({ farm, fields, farmHealth }) {
                             <span style={{ fontFamily: fonts.mono, fontSize: 11, fontWeight: 600 }}>{Number.isFinite(r.score) ? r.score : "—"}</span>
                           </span>
                         </td>
-                        <td style={{ ...tdMono, color: ndviColor(r.ndviMean) }}>{Number.isFinite(r.ndviMean) ? r.ndviMean.toFixed(2) : "—"}</td>
+                        <td style={{ ...tdMono, minWidth: 190 }}>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 3, justifyContent: "center" }}>
+                            {SPECTRAL_INDEX_LIST.map((idx) => Number.isFinite(r.spectral?.[idx.id]) ? (
+                              <span key={idx.id} title={idx.interpretation} style={{ color: idx.id === "ndvi" ? ndviColor(r.spectral[idx.id]) : brand.bodySoft }}>
+                                {idx.label} {formatSpectralValue(r.spectral[idx.id])}
+                              </span>
+                            ) : null)}
+                          </div>
+                        </td>
                         <td style={{ ...tdStyle, fontSize: 14, color: trendColor(r.trend) }}>{trendGlyph(r.trend)}</td>
                         <td style={tdMono}>{r.stage ? (STAGE_LABELS[r.stage] || r.stage) : "—"}</td>
                         <td style={{ ...tdMono, color: r.nPerHa > 0 ? brand.forest : brand.muted }}>{r.nPerHa > 0 ? r.nPerHa.toFixed(0) : "—"}</td>

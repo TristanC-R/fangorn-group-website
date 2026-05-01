@@ -97,6 +97,7 @@ function PricesTab({ farmId }) {
   });
   const [watchlist, setWatchlist] = useLocalValue("market_watchlist", farmId, []);
   const [watchDraft, setWatchDraft] = useState({ marketId: "feed-wheat", target: "", direction: "above" });
+  const [showWatchForm, setShowWatchForm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -230,6 +231,7 @@ function PricesTab({ farmId }) {
       ...prev,
     ]);
     setWatchDraft({ marketId: row.id, target: "", direction: watchDraft.direction });
+    setShowWatchForm(false);
   };
 
   const removeWatch = (id) => setWatchlist((prev) => prev.filter((w) => w.id !== id));
@@ -383,8 +385,17 @@ function PricesTab({ farmId }) {
       </div>
 
       <Card padding={14} style={{ marginTop: 14 }}>
-        <Kicker style={{ marginBottom: 8 }}>Watchlist</Kicker>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) 110px 100px auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+          <Kicker>Watchlist</Kicker>
+          <Button className="tilth-market-watch-open" variant="secondary" size="sm" onClick={() => setShowWatchForm(true)}>
+            Add watch
+          </Button>
+        </div>
+        <div className={`tilth-market-watch-form tilth-market-form-card ${showWatchForm ? "open" : ""}`} style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) 110px 100px auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
+          <div className="tilth-market-watch-sheet-head">
+            <Kicker>Add watch</Kicker>
+            <Button variant="ghost" size="sm" onClick={() => setShowWatchForm(false)}>Close</Button>
+          </div>
           <div>
             <FieldLabel>Market</FieldLabel>
             <select value={watchDraft.marketId} onChange={(e) => setWatchDraft((p) => ({ ...p, marketId: e.target.value }))} style={{ ...inputStyle, fontSize: 12 }}>
@@ -431,6 +442,40 @@ function PricesTab({ farmId }) {
           <Body size="sm" style={{ color: brand.muted }}>Add target prices for crops, livestock, milk or inputs. These are local watches for now; notification delivery can plug into the existing task/notification layer later.</Body>
         )}
       </Card>
+      <style>{`
+        @media (max-width: 760px) {
+          .tilth-market-watch-open {
+            display: inline-flex !important;
+          }
+          .tilth-market-watch-form {
+            grid-template-columns: 1fr !important;
+            display: none !important;
+          }
+          .tilth-market-watch-form.open {
+            display: grid !important;
+          }
+          .tilth-market-watch-sheet-head {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            gap: 8px !important;
+            position: sticky !important;
+            top: 0 !important;
+            background: ${brand.white} !important;
+            z-index: 2 !important;
+            padding-bottom: 6px !important;
+          }
+          .tilth-market-watch-form button {
+            width: 100% !important;
+          }
+        }
+        @media (min-width: 761px) {
+          .tilth-market-watch-open,
+          .tilth-market-watch-sheet-head {
+            display: none !important;
+          }
+        }
+      `}</style>
     </>
   );
 }
@@ -511,7 +556,7 @@ function SalesTab({ farmId }) {
       </div>
 
       {showForm && (
-        <Card padding={14} style={{ marginBottom: 14 }}>
+        <Card className="tilth-market-form-card" padding={14} style={{ marginBottom: 14 }}>
           <Kicker style={{ marginBottom: 10 }}>New sale</Kicker>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div>
@@ -702,7 +747,7 @@ function PurchasesTab({ farmId }) {
       </div>
 
       {showForm && (
-        <Card padding={14} style={{ marginBottom: 14 }}>
+        <Card className="tilth-market-form-card" padding={14} style={{ marginBottom: 14 }}>
           <Kicker style={{ marginBottom: 10 }}>New purchase</Kicker>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div>

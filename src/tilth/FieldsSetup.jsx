@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FieldMapThree2D } from "./FieldMapThree2D";
 import { getTilthApiBase, tilthApiConfigured } from "../lib/tilthApi.js";
-import { fetchOsmFieldAtPoint } from "./osmFieldAtPoint.js";
+import { classifyOsmLandUse, fetchOsmFieldAtPoint } from "./osmFieldAtPoint.js";
 import { supabase } from "../lib/supabaseClient";
 import { triggerNdviRefresh } from "../lib/tilthSentinel.js";
 import { triggerSarRefresh } from "../lib/tilthSar.js";
 import { autoFillFieldSoil } from "../lib/soilAutoFill.js";
+import { tilthStore } from "./state/localStore.js";
 
 const brand = {
   muted: "#839788",
@@ -88,6 +89,17 @@ const WGS84_R = 6378137;
 const TWO_PI_R = 2 * Math.PI * WGS84_R;
 /** Must match `FieldMapThree2D`: halfH = (2πR/2^z) * 0.55, view height in mercator Y = 2*halfH. */
 const ORTHO_HALF_H_FRAC = 0.55;
+
+function currentPasturePlanting() {
+  return {
+    id: crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    crop: "Permanent pasture",
+    plantingDate: `${new Date().getFullYear()}-01-01`,
+    notes: "Auto-classified from OSM grassland/pasture tags.",
+    source: "osm",
+    createdAt: new Date().toISOString(),
+  };
+}
 
 function lonLatToMercMeters(lon, lat) {
   const λ = (lon * Math.PI) / 180;
@@ -185,6 +197,7 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
   const [outlineBusy, setOutlineBusy] = useState(false);
   const findFieldAbortRef = useRef(null);
   const [lastFoundOutline, setLastFoundOutline] = useState(null);
+  const [draftLandUse, setDraftLandUse] = useState(null);
   const [draftRing, setDraftRing] = useState([]);
   const [fieldName, setFieldName] = useState("");
   const [formError, setFormError] = useState(null);
@@ -378,6 +391,7 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
         return;
       }
       setLastFoundOutline(outline);
+      setDraftLandUse(outline.landUse || classifyOsmLandUse(outline.tags) || null);
       setDraftRing(outline.ring.map((p) => ({ lat: p.lat, lng: p.lng })));
       setFieldName((prev) => {
         const existing = String(prev || "").trim();
@@ -453,6 +467,8 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
 
   const clearDraft = () => {
     setDraftRing([]);
+    setDraftLandUse(null);
+    setLastFoundOutline(null);
     setFormError(null);
   };
 
@@ -492,6 +508,25 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
       // are logged but never block the save. The server-side periodic
       // sweep will catch up later if either fails to kick off.
       if (data?.id) {
+        if (draftLandUse) {
+          const attrs = tilthStore.loadFieldAttrs(farm.id);
+          tilthStore.saveFieldAttrs(farm.id, {
+            ...attrs,
+            [data.id]: {
+              ...(attrs[data.id] || {}),
+              landUse: draftLandUse,
+              ...(draftLandUse === "grass" ? { crop: "Permanent pasture" } : {}),
+              osmTags: lastFoundOutline?.tags || null,
+            },
+          });
+        }
+        if (draftLandUse === "grass") {
+          const plantings = tilthStore.loadPlantings(farm.id);
+          tilthStore.savePlantings(farm.id, {
+            ...plantings,
+            [data.id]: [currentPasturePlanting()],
+          });
+        }
         triggerNdviRefresh(data.id).catch(() => {});
         triggerSarRefresh(data.id).catch(() => {});
         autoFillFieldSoil(farm.id, data.id, ring).catch(() => {});
@@ -505,14 +540,21 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
   };
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto", padding: "36px 20px 80px" }}>
+    <div className="tilth-fields-setup-root" style={{ maxWidth: 1500, height: "calc(100dvh - 24px)", minHeight: 0, margin: "0 auto", padding: "12px 16px", boxSizing: "border-box", overflow: "hidden" }}>
       <div
+        className="tilth-fields-setup-card"
         style={{
+          height: "100%",
+          minHeight: 0,
           border: `1px solid ${brand.border}`,
           background: brand.bgSection,
           borderRadius: 2,
-          padding: "clamp(22px, 4vw, 34px)",
+          padding: 16,
           boxShadow: "0 18px 70px rgba(16,78,63,0.08)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          boxSizing: "border-box",
         }}
       >
         <div
@@ -540,7 +582,8 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
         >
           Map your fields
         </h1>
-        <p
+          <p
+            className="tilth-fields-setup-intro"
           style={{
             fontFamily: "'DM Sans', system-ui, sans-serif",
             fontSize: 15,
@@ -561,11 +604,15 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
             display: "grid",
             gridTemplateColumns: "minmax(0, 1fr) minmax(280px, 320px)",
             gap: 18,
-            alignItems: "start",
+            alignItems: "stretch",
+            flex: "1 1 auto",
+            height: "100%",
+            minHeight: 0,
+            overflow: "hidden",
           }}
           className="tilth-fields-layout"
         >
-          <div>
+          <div style={{ minHeight: 0, height: "100%", display: "flex", flexDirection: "column" }}>
             <div
               style={{
                 display: "flex",
@@ -577,7 +624,7 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
             >
               {[
                 ["pan", "Pan map"],
-                ["find", "Use saved boundary"],
+                ["find", "Find OSM boundary"],
                 ["draw", "Draw boundary"],
               ].map(([id, label]) => (
                 <button
@@ -620,40 +667,43 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
               </button>
             </div>
 
-            {mapView ? (
-              <FieldMapThree2D
-                key={`${mapView.lat.toFixed(6)}-${mapView.lng.toFixed(6)}-${mapView.zoom}`}
-                center={[mapView.lat, mapView.lng]}
-                zoom={mapView.zoom}
-                savedFields={fields || []}
-                draftRing={draftRing}
-                mapMode={mapMode}
-                onAddVertex={(lat, lng) => {
-                  setDraftRing((r) => [...r, { lat, lng }]);
-                  setFormError(null);
-                }}
-                onFindFieldClick={handleFindFieldClick}
-              />
-            ) : (
-              <div
-                style={{
-                  width: "100%",
-                  minHeight: 420,
-                  height: "min(62vh, 640px)",
-                  borderRadius: 2,
-                  border: `1px solid ${brand.border}`,
-                  background: brand.bgSection,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontFamily: "'DM Sans', system-ui, sans-serif",
-                  fontSize: 15,
-                  color: brand.muted,
-                }}
-              >
-                Locating your farm on the map…
-              </div>
-            )}
+            <div className="tilth-fields-setup-map-slot" style={{ flex: "1 1 auto", minHeight: 520 }}>
+              {mapView ? (
+                <FieldMapThree2D
+                  key={`${mapView.lat.toFixed(6)}-${mapView.lng.toFixed(6)}-${mapView.zoom}`}
+                  center={[mapView.lat, mapView.lng]}
+                  zoom={mapView.zoom}
+                  savedFields={fields || []}
+                  draftRing={draftRing}
+                  mapMode={mapMode}
+                  height="100%"
+                  onAddVertex={(lat, lng) => {
+                    setDraftRing((r) => [...r, { lat, lng }]);
+                    setFormError(null);
+                  }}
+                  onFindFieldClick={handleFindFieldClick}
+                />
+              ) : (
+                <div
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    minHeight: 0,
+                    borderRadius: 2,
+                    border: `1px solid ${brand.border}`,
+                    background: brand.bgSection,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontFamily: "'DM Sans', system-ui, sans-serif",
+                    fontSize: 15,
+                    color: brand.muted,
+                  }}
+                >
+                  Locating your farm on the map…
+                </div>
+              )}
+            </div>
 
             <div
               style={{
@@ -665,9 +715,10 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
               }}
             >
               {geocodeNote ? `${geocodeNote} ` : ""}
-              Drag to move the map · Scroll to zoom · Use saved boundary or draw your own ·
+              Drag to move the map · Scroll to zoom · Find OSM boundary or draw your own ·
               Boundary points: <strong>{draftRing.length}</strong>
               {outlineBusy ? " · Looking for a boundary…" : ""}
+              {draftLandUse === "grass" ? " · Grassland detected" : ""}
               {fields?.length ? (
                 <>
                   {" "}
@@ -678,11 +729,16 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
           </div>
 
           <div
+            className="tilth-fields-setup-side"
             style={{
               border: `1px solid ${brand.border}`,
               borderRadius: 2,
               background: brand.white,
               padding: 16,
+              minHeight: 0,
+              maxHeight: "100%",
+              overflowY: "auto",
+              boxSizing: "border-box",
             }}
           >
             {lastFoundOutline ? (
@@ -705,7 +761,7 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
                       fontWeight: 600,
                     }}
                   >
-                    Boundary found. Open technical details.
+                    Boundary found{draftLandUse === "grass" ? " · Grassland default will be applied" : ""}. Open technical details.
                   </summary>
                   <div
                     style={{
@@ -760,13 +816,13 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
                 lineHeight: 1.5,
               }}
             >
-              <strong style={{ color: brand.forest }}>Use a saved boundary</strong>
+              <strong style={{ color: brand.forest }}>Find an OSM boundary</strong>
               {!mapView ? " — waiting for map." : null}
               {mapView && outlineBusy ? " — looking for a boundary at your click…" : null}
               {mapView && !outlineBusy ? (
                 <>
                   {" "}
-                  — choose <strong>Use saved boundary</strong>, then click inside a field. If nothing
+                  — choose <strong>Find OSM boundary</strong>, then click inside a field. If nothing
                   appears, use <strong>Draw boundary</strong>.
                 </>
               ) : null}
@@ -887,7 +943,30 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
       </div>
       <style>{`
         @media (max-width: 900px) {
+          .tilth-fields-setup-root {
+            height: auto !important;
+            min-height: 100%;
+            overflow: visible !important;
+          }
+          .tilth-fields-setup-card,
+          .tilth-fields-layout {
+            overflow: visible !important;
+          }
           .tilth-fields-layout { grid-template-columns: 1fr !important; }
+          .tilth-fields-setup-side {
+            max-height: none !important;
+            overflow: visible !important;
+          }
+        }
+        @media (min-width: 901px) {
+          .tilth-fields-setup-intro {
+            display: none !important;
+          }
+        }
+        @media (max-width: 700px) {
+          .tilth-fields-setup-map-slot {
+            min-height: 64dvh !important;
+          }
         }
       `}</style>
     </div>

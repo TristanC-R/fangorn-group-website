@@ -813,6 +813,7 @@ function OverlayInfoCard({ info, onClose }) {
     <div
       role="dialog"
       aria-label="Layer feature info"
+      className="tilth-soil-info-card tilth-scroll"
       style={{
         position: "absolute",
         left,
@@ -833,7 +834,6 @@ function OverlayInfoCard({ info, onClose }) {
         gap: 8,
         pointerEvents: "auto",
       }}
-      className="tilth-scroll"
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span
@@ -863,8 +863,10 @@ function OverlayInfoCard({ info, onClose }) {
             fontSize: 14,
             lineHeight: 1,
             padding: 0,
-            width: 16,
-            height: 16,
+            width: 44,
+            height: 44,
+            minWidth: 44,
+            minHeight: 44,
           }}
         >
           ×
@@ -1029,6 +1031,7 @@ export function SoilWorkspace({ fields }) {
   const [enabledIds, setEnabledIds] = useState(() => new Set());
   const [opacities, setOpacities] = useState({});
   const [groupFilter, setGroupFilter] = useState("all");
+  const [layerMenuOpen, setLayerMenuOpen] = useState(false);
   // Popup shown when the user clicks the map while overlays are active.
   // Holds the click position (lat/lng + wrapper-relative pixel coords)
   // and a per-active-layer identify result that updates progressively
@@ -1331,12 +1334,14 @@ export function SoilWorkspace({ fields }) {
   return (
     <WorkspaceFrame
       header={
-        <SectionHeader
-          kicker="Environmental"
-          title="Soil & land context"
-          description="Stack soil, geology, coal-mining, flood and designation overlays beneath your field map. All layers are proxied through the Tilth backend so tiles are cached and attributed in one place."
-          actions={<LayerStatusPill apiBase={apiBase} manifestState={manifestState} />}
-        />
+        <div className="tilth-soil-header">
+          <SectionHeader
+            kicker="Environmental"
+            title="Soil & land context"
+            description="Stack soil, geology, coal-mining, flood and designation overlays beneath your field map. All layers are proxied through the Tilth backend so tiles are cached and attributed in one place."
+            actions={<LayerStatusPill apiBase={apiBase} manifestState={manifestState} />}
+          />
+        </div>
       }
     >
       {!withRings.length ? (
@@ -1359,7 +1364,7 @@ export function SoilWorkspace({ fields }) {
             overflow: "hidden",
           }}
         >
-          <div style={{ display: "flex", flexDirection: "column", minHeight: 0, gap: 8 }}>
+          <div className="tilth-soil-map-column" style={{ display: "flex", flexDirection: "column", minHeight: 0, gap: 8 }}>
             <div
               ref={mapWrapRef}
               style={{ flex: "1 1 auto", minHeight: 0, position: "relative" }}
@@ -1379,6 +1384,31 @@ export function SoilWorkspace({ fields }) {
               {overlayInfo ? (
                 <OverlayInfoCard info={overlayInfo} onClose={() => setOverlayInfo(null)} />
               ) : null}
+              <button
+                type="button"
+                className="tilth-soil-layer-button"
+                onClick={() => setLayerMenuOpen(true)}
+                style={{
+                  position: "absolute",
+                  right: 12,
+                  top: 12,
+                  zIndex: 5,
+                  display: "none",
+                  border: `1px solid ${brand.border}`,
+                  borderRadius: radius.base,
+                  background: brand.white,
+                  color: brand.forest,
+                  fontFamily: fonts.mono,
+                  fontSize: 11,
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                  padding: "9px 11px",
+                  boxShadow: "0 10px 30px rgba(16,78,63,0.16)",
+                  cursor: "pointer",
+                }}
+              >
+                Layers
+              </button>
               {activeLayers.length ? (
                 <div
                   style={{
@@ -1442,6 +1472,7 @@ export function SoilWorkspace({ fields }) {
             </div>
 
             <div
+              className="tilth-soil-filter-bar"
               style={{
                 flex: "0 0 auto",
                 padding: "8px 10px",
@@ -1488,6 +1519,7 @@ export function SoilWorkspace({ fields }) {
           </div>
 
           <div
+            className={`tilth-soil-side-panel tilth-scroll ${layerMenuOpen ? "open" : ""}`}
             style={{
               display: "flex",
               flexDirection: "column",
@@ -1496,8 +1528,28 @@ export function SoilWorkspace({ fields }) {
               overflowY: "auto",
               paddingRight: 4,
             }}
-            className="tilth-scroll"
           >
+            <button
+              type="button"
+              className="tilth-soil-panel-close"
+              onClick={() => setLayerMenuOpen(false)}
+              style={{
+                display: "none",
+                border: `1px solid ${brand.border}`,
+                borderRadius: radius.base,
+                background: brand.white,
+                color: brand.forest,
+                fontFamily: fonts.mono,
+                fontSize: 10,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                padding: "8px 10px",
+                cursor: "pointer",
+                justifyContent: "center",
+              }}
+            >
+              Close layers
+            </button>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <Stat
                 kicker="Layers"
@@ -1592,6 +1644,77 @@ export function SoilWorkspace({ fields }) {
       <style>{`
         @media (max-width: 1250px) {
           .tilth-soil-layout { grid-template-columns: 1fr !important; }
+        }
+        @media (max-width: 760px) {
+          .tilth-soil-layout {
+            display: block !important;
+            position: relative !important;
+            overflow: hidden !important;
+            gap: 0 !important;
+          }
+          .tilth-soil-header p {
+            display: none !important;
+          }
+          .tilth-soil-header > div {
+            margin-bottom: 8px !important;
+          }
+          .tilth-soil-map-column {
+            position: absolute !important;
+            inset: 0 !important;
+            display: block !important;
+          }
+          .tilth-soil-map-column > div:first-child {
+            height: 100% !important;
+          }
+          .tilth-soil-layer-button {
+            display: inline-flex !important;
+          }
+          .tilth-soil-filter-bar {
+            display: none !important;
+          }
+          .tilth-soil-side-panel {
+            position: fixed !important;
+            left: max(10px, env(safe-area-inset-left, 0px)) !important;
+            right: max(10px, env(safe-area-inset-right, 0px)) !important;
+            top: max(72px, env(safe-area-inset-top, 0px)) !important;
+            bottom: max(10px, env(safe-area-inset-bottom, 0px)) !important;
+            z-index: 2600 !important;
+            display: none !important;
+            max-height: none !important;
+            overflow-y: auto !important;
+            background: ${brand.white} !important;
+            border: 1px solid ${brand.border} !important;
+            border-radius: 16px !important;
+            box-shadow: 0 -18px 70px rgba(14,42,36,0.24) !important;
+            padding: 12px !important;
+          }
+          .tilth-soil-side-panel.open {
+            display: flex !important;
+          }
+          .tilth-soil-panel-close {
+            display: inline-flex !important;
+            position: sticky !important;
+            top: 0 !important;
+            z-index: 2 !important;
+          }
+          .tilth-soil-side-panel > div:first-of-type {
+            grid-template-columns: 1fr 1fr !important;
+          }
+          .tilth-soil-info-card {
+            position: fixed !important;
+            left: max(10px, env(safe-area-inset-left, 0px)) !important;
+            right: max(10px, env(safe-area-inset-right, 0px)) !important;
+            bottom: max(10px, env(safe-area-inset-bottom, 0px)) !important;
+            top: auto !important;
+            transform: none !important;
+            width: auto !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            max-height: min(70dvh, 640px) !important;
+            z-index: 2500 !important;
+            border-radius: 16px 16px 8px 8px !important;
+            box-shadow: 0 -18px 70px rgba(14,42,36,0.22) !important;
+          }
         }
       `}</style>
     </WorkspaceFrame>

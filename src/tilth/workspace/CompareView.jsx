@@ -146,7 +146,7 @@ function SectionRow({ label, children }) {
   return (
     <Card padding={14} style={{ marginBottom: 8 }}>
       <Kicker style={{ marginBottom: 10 }}>{label}</Kicker>
-      <div style={{ display: "flex", gap: 12 }}>
+      <div className="tilth-compare-row" style={{ display: "flex", gap: 12 }}>
         {children}
       </div>
     </Card>
@@ -155,7 +155,7 @@ function SectionRow({ label, children }) {
 
 function FieldCol({ children, style }) {
   return (
-    <div style={{ flex: `1 0 ${COL_MIN}px`, minWidth: COL_MIN, maxWidth: 320, ...style }}>
+    <div className="tilth-compare-col" style={{ flex: `1 0 ${COL_MIN}px`, minWidth: COL_MIN, maxWidth: 320, ...style }}>
       {children}
     </div>
   );
@@ -317,9 +317,9 @@ export function CompareView({ fields, farmId }) {
           description="Click the field chips above to pick fields for a side-by-side comparison of health, inputs, yield and more."
         />
       ) : (
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "auto" }}>
+        <div className="tilth-compare-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "auto" }}>
           {/* Column headers */}
-          <div style={{ display: "flex", gap: 12, marginBottom: 8, position: "sticky", top: 0, zIndex: 1, background: brand.white, paddingBottom: 6 }}>
+          <div className="tilth-compare-header" style={{ display: "flex", gap: 12, marginBottom: 8, position: "sticky", top: 0, zIndex: 10, background: brand.white, padding: "8px 0 6px", boxShadow: `0 1px 0 ${brand.border}` }}>
             {chosen.map((f) => (
               <FieldCol key={f.id}>
                 <div style={{ fontFamily: fonts.sans, fontSize: 14, fontWeight: 600, color: brand.forest }}>
@@ -474,6 +474,31 @@ export function CompareView({ fields, farmId }) {
           </SectionRow>
         </div>
       )}
+      <style>{`
+        @media (max-width: 760px) {
+          .tilth-compare-scroll {
+            overflow-x: auto !important;
+            -webkit-overflow-scrolling: touch;
+          }
+          .tilth-compare-header,
+          .tilth-compare-row {
+            width: max-content !important;
+            min-width: 100% !important;
+          }
+          .tilth-compare-header {
+            background: ${brand.white} !important;
+            border-bottom: 1px solid ${brand.border} !important;
+            padding: 8px 10px 6px !important;
+            margin-left: -10px !important;
+            margin-right: -10px !important;
+          }
+          .tilth-compare-col {
+            flex-basis: 210px !important;
+            min-width: 210px !important;
+            max-width: 240px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }
