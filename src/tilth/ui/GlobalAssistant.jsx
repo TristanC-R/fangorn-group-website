@@ -6,15 +6,6 @@ import { tilthStore } from "../state/localStore.js";
 import { brand, fonts, inputStyle, radius } from "./theme.js";
 import { Button, Kicker, Pill } from "./primitives.jsx";
 
-const SCOPES = [
-  ["whole_farm", "Whole farm"],
-  ["fields_satellite", "Fields + satellite"],
-  ["documents", "Documents"],
-  ["operations", "Operations"],
-  ["finance", "Finance"],
-  ["compliance", "Compliance"],
-];
-
 const REPORT_TYPES = [
   ["farm_operations", "Farm operations"],
   ["field_performance", "Field performance"],
@@ -30,12 +21,27 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function timeout(ms, message) {
+  return new Promise((_, reject) => {
+    window.setTimeout(() => reject(new Error(message)), ms);
+  });
+}
+
+function nonBlockingLoadError(err, fallback) {
+  const raw = err?.message || String(err || "");
+  if (/failed to fetch|networkerror|load failed/i.test(raw)) {
+    return "Could not load previous assistant history. You can still send a new message.";
+  }
+  return raw || fallback;
+}
+
 function actionLabel(type) {
   return {
     calendar_reminder: "Calendar",
     finance_transaction: "Finance",
     inventory_item: "Inventory",
     inventory_adjustment: "Stock adjustment",
+    field_observation: "Observations",
     spray_record: "Records",
     contact: "Contact",
     compliance_checklist: "Compliance",
@@ -45,25 +51,41 @@ function actionLabel(type) {
   }[type] || "Action";
 }
 
+function intendedActionType(action) {
+  return action?.metadata?.intendedActionType || action?.payload?.recordAs || action?.action_type;
+}
+
 function sourceLabel(source) {
   if (!source) return "Source";
   if (source.label) return source.label;
   if (source.type === "document") return "Document";
   if (source.type === "field") return "Field";
   if (source.type === "satellite_ndvi") return "Satellite";
-  if (source.type === "wms_layer") return "WMS layer";
+  if (source.type === "wms_layer") return "Map layer";
   return source.type || "Source";
+}
+
+function assistantErrorMessage(err, fallback = "The assistant could not finish that request.") {
+  const raw = err?.message || String(err || "");
+  if (/not configured|tilth api|supabase|npm run|failed to fetch|networkerror|load failed/i.test(raw)) {
+    return "The assistant is not reachable right now. Check your connection and try again.";
+  }
+  if (/signed in/i.test(raw)) return "Please sign in again to use the assistant.";
+  if (/unsupported assistant action type/i.test(raw)) {
+    return "The assistant suggested something Tilth cannot apply yet. You can still use the details as a note.";
+  }
+  return raw || fallback;
 }
 
 export function GlobalAssistant({ farm }) {
   const farmId = farm?.id || null;
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState("chat");
-  const [scope, setScope] = useState("whole_farm");
   const [reportType, setReportType] = useState("farm_operations");
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
   const [sessionId, setSessionId] = useState(null);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [pendingActions, setPendingActions] = useState([]);
   const [applyingId, setApplyingId] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -75,41 +97,113 @@ export function GlobalAssistant({ farm }) {
     : "Ask about fields, satellite, records, finance, documents…";
 
   const apiFetch = async (path, body, method = "POST") => {
-    const base = getTilthApiBase();
-    if (!base) throw new Error("Set VITE_TILTH_API_URL and run npm run tilth-api.");
-    if (!supabase) throw new Error("Supabase is not configured.");
+    if (!supabase) throw new Error("Assistant is not configured.");
     const { data } = await supabase.auth.getSession();
     const token = data?.session?.access_token;
     if (!token) throw new Error("You need to be signed in.");
-    const response = await fetch(`${base}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: method === "POST" ? JSON.stringify({ farmId, ...body }) : undefined,
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || "Assistant request failed.");
-    return payload;
+    const apiBase = import.meta.env.DEV ? "/tilth-api" : (getTilthApiBase() || "");
+    if (!apiBase) throw new Error("Assistant service is not configured.");
+    const url = `${apiBase}${path.startsWith("/") ? path : `/${path}`}`;
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const response = await fetch(url, {
+          method,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: method === "POST" ? JSON.stringify({ farmId, ...body }) : undefined,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || `Assistant request failed (${response.status}).`);
+        return payload;
+      } catch (err) {
+        lastError = err;
+        if (err?.message && !/failed to fetch|networkerror|load failed/i.test(err.message)) throw err;
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+    throw new Error(lastError?.message || "Assistant service is not reachable.");
   };
+
+  useEffect(() => {
+    setMessages([]);
+    setSessionId(null);
+    setHistoryLoaded(false);
+    setError("");
+  }, [farmId]);
+
+  useEffect(() => {
+    if (!open || !farmId || !supabase || historyLoaded) return undefined;
+    let cancelled = false;
+    async function loadHistory() {
+      try {
+        const { data: sessions, error: sessionError } = await Promise.race([
+          supabase
+            .from("assistant_chat_sessions")
+            .select("id")
+            .eq("farm_id", farmId)
+            .order("updated_at", { ascending: false })
+            .limit(1),
+          timeout(4000, "Assistant history request timed out."),
+        ]);
+        if (cancelled) return;
+        if (sessionError) throw new Error(sessionError.message);
+        const latestSessionId = sessions?.[0]?.id || null;
+        setSessionId(latestSessionId);
+        if (!latestSessionId) return;
+        const { data: rows, error: messageError } = await Promise.race([
+          supabase
+            .from("assistant_chat_messages")
+            .select("id,role,content,sources,suggested_actions,created_at")
+            .eq("farm_id", farmId)
+            .eq("chat_session_id", latestSessionId)
+            .order("created_at", { ascending: true })
+            .limit(80),
+          timeout(4000, "Assistant message history request timed out."),
+        ]);
+        if (cancelled) return;
+        if (messageError) throw new Error(messageError.message);
+        setMessages((rows || []).map((row) => ({
+          id: row.id,
+          role: row.role,
+          content: row.content,
+          sources: row.sources || [],
+          suggestedActions: row.suggested_actions || [],
+        })));
+      } catch (err) {
+        if (!cancelled) console.warn(nonBlockingLoadError(err, "Could not load previous assistant history."));
+      } finally {
+        if (!cancelled) setHistoryLoaded(true);
+      }
+    }
+    loadHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [farmId, historyLoaded, open]);
 
   useEffect(() => {
     if (!open || !farmId || !supabase) return undefined;
     let cancelled = false;
     async function loadActions() {
-      const { data, error: actionError } = await supabase
-        .from("assistant_suggested_actions")
-        .select("*")
-        .eq("farm_id", farmId)
-        .eq("status", "pending")
-        .order("created_at", { ascending: false });
-      if (cancelled) return;
-      if (actionError) {
-        setError(actionError.message);
-        return;
+      try {
+        const { data, error: actionError } = await Promise.race([
+          supabase
+            .from("assistant_suggested_actions")
+            .select("*")
+            .eq("farm_id", farmId)
+            .eq("status", "pending")
+            .order("created_at", { ascending: false }),
+          timeout(5000, "Assistant actions request timed out."),
+        ]);
+        if (cancelled) return;
+        if (actionError) throw new Error(actionError.message);
+        setPendingActions(data || []);
+      } catch (err) {
+        if (!cancelled) console.warn(nonBlockingLoadError(err, "Could not load pending assistant actions."));
       }
-      setPendingActions(data || []);
     }
     loadActions();
     const interval = window.setInterval(loadActions, 6000);
@@ -131,12 +225,12 @@ export function GlobalAssistant({ farm }) {
         ? await apiFetch("/api/platform-assistant/reports/generate", {
             prompt: text,
             reportType,
-            scope,
+            scope: "auto",
           })
         : await apiFetch("/api/platform-assistant/chat", {
             message: text,
             chatSessionId: sessionId,
-            scope,
+            scope: "auto",
           });
       if (payload.chatSessionId) setSessionId(payload.chatSessionId);
       if (payload.suggestedActions?.length) {
@@ -156,7 +250,7 @@ export function GlobalAssistant({ farm }) {
         },
       ]);
     } catch (err) {
-      const msg = err?.message || "Assistant request failed.";
+      const msg = assistantErrorMessage(err);
       setError(msg);
       setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: msg, sources: [], error: true }]);
     } finally {
@@ -175,30 +269,24 @@ export function GlobalAssistant({ farm }) {
       .eq("farm_id", farmId)
       .maybeSingle();
     if (docError || !data?.storage_path) {
-      setError(docError?.message || "Only document sources can be opened directly for now.");
+      setError("That source cannot be opened from here yet.");
       return;
     }
     const signed = await supabase.storage
       .from(data.bucket || "farm-documents")
       .createSignedUrl(data.storage_path, 60 * 10);
     if (signed.error) {
-      setError(signed.error.message);
+      setError("Could not open that document link. Please try again.");
       return;
     }
     if (signed.data?.signedUrl) window.open(signed.data.signedUrl, "_blank", "noopener,noreferrer");
   };
 
   const updateActionStatus = async (action, status) => {
-    const { data: authData } = await supabase.auth.getUser();
-    const patch = status === "applied"
-      ? { status, applied_at: new Date().toISOString(), applied_by: authData?.user?.id || null }
-      : { status, dismissed_at: new Date().toISOString(), dismissed_by: authData?.user?.id || null };
-    const { error: updateError } = await supabase
-      .from("assistant_suggested_actions")
-      .update({ ...patch, updated_at: new Date().toISOString() })
-      .eq("id", action.id)
-      .eq("farm_id", farmId);
-    if (updateError) throw new Error(updateError.message);
+    await apiFetch("/api/platform-assistant/actions/status", {
+      actionId: action.id,
+      status,
+    });
     setPendingActions((prev) => prev.filter((item) => item.id !== action.id));
   };
 
@@ -209,6 +297,34 @@ export function GlobalAssistant({ farm }) {
       ? rows.map((row) => (row.sourceKey === key ? { ...row, ...entry, id: row.id, updatedAt: new Date().toISOString() } : row))
       : [entry, ...rows];
     tilthStore.saveNamespace(namespace, farmId, next);
+  };
+
+  const looksLikeObservationAction = (action, payload) => {
+    if (intendedActionType(action) === "field_observation" || payload?.recordAs === "field_observation") return true;
+    const text = `${action?.title || ""} ${action?.summary || ""} ${payload?.notes || ""}`.toLowerCase();
+    const hasApplicationDetails = Boolean(payload?.productName || payload?.productId || Number(payload?.rate));
+    return !hasApplicationDetails && /\b(observ|noticed|note|black\s*grass|weed|pest|disease|waterlogging|lodging|scout|corner|patch)\b/.test(text);
+  };
+
+  const upsertObservationAction = (action, payload = {}) => {
+    const sourceKey = payload.sourceKey || `assistant:${action.id}`;
+    const noteParts = [
+      payload.notes || action.summary || action.title,
+      payload.locationHint ? `Location: ${payload.locationHint}` : "",
+      payload.recommendedAction ? `Recommended action: ${payload.recommendedAction}` : "",
+    ].filter(Boolean);
+    upsertArrayNamespace("observations", {
+      id: uid(),
+      fieldId: payload.fieldId || payload.fieldName || "",
+      fieldName: payload.fieldName || "",
+      type: payload.type || (/black\s*grass|weed/i.test(noteParts.join(" ")) ? "weed" : "general"),
+      notes: noteParts.join("\n"),
+      photos: [],
+      datetime: payload.datetime || payload.date || new Date().toISOString(),
+      location: null,
+      sourceKey,
+      createdAt: new Date().toISOString(),
+    }, sourceKey);
   };
 
   const applyAction = async (action) => {
@@ -231,16 +347,18 @@ export function GlobalAssistant({ farm }) {
           notes: p.notes || action.summary || "",
         });
       } else if (action.action_type === "finance_transaction") {
+        const amount = p.amount ?? p.amountDue ?? p.totalAmount ?? p.total ?? p.grossAmount;
+        const vatAmount = p.vatAmount ?? p.vat ?? p.vatTotal ?? p.taxAmount;
         upsertArrayNamespace("finances", {
           id: uid(),
           type: p.type || "expense",
-          date: p.date || today(),
-          amount: Number(p.amount) || 0,
-          vatAmount: Number(p.vatAmount) || 0,
+          date: p.date || p.invoiceDate || p.documentDate || p.transactionDate || p.dueDate || today(),
+          amount: Number(amount) || 0,
+          vatAmount: Number(vatAmount) || 0,
           category: p.category || "other",
           description: p.description || action.title,
-          counterparty: p.counterparty || "",
-          invoiceRef: p.invoiceRef || "",
+          counterparty: p.counterparty || p.supplier || p.vendor || p.issuer || "",
+          invoiceRef: p.invoiceRef || p.invoiceNumber || p.invoiceNo || p.reference || "",
           fieldId: p.fieldId || "",
           notes: p.notes || action.summary || "",
           sourceKey,
@@ -279,7 +397,18 @@ export function GlobalAssistant({ farm }) {
           };
         });
         tilthStore.saveNamespace("inventory", farmId, next);
+      } else if (intendedActionType(action) === "field_observation") {
+        upsertObservationAction(action, p);
       } else if (action.action_type === "spray_record") {
+        if (looksLikeObservationAction(action, p)) {
+          upsertObservationAction(action, {
+            ...p,
+            type: /black\s*grass|weed/i.test(`${action.title} ${action.summary} ${p.notes}`) ? "weed" : "general",
+            recommendedAction: p.recommendedAction || "Review whether a follow-up spray is needed.",
+          });
+          await updateActionStatus(action, "applied");
+          return;
+        }
         const productName = p.productName || action.title;
         const productId = p.productId || `assistant-${String(action.id).slice(0, 8)}`;
         const customProducts = tilthStore.loadCustomProducts(farmId);
@@ -322,10 +451,12 @@ export function GlobalAssistant({ farm }) {
           ...checklists,
           [key]: [...(checklists[key] || []), { id: uid(), title: p.title || action.title, notes: p.notes || action.summary || "", sourceKey, createdAt: new Date().toISOString() }],
         });
+      } else {
+        throw new Error(`Unsupported assistant action type: ${intendedActionType(action) || action.action_type || "unknown"}.`);
       }
       await updateActionStatus(action, "applied");
     } catch (err) {
-      setError(err?.message || "Could not apply suggested action.");
+      setError(assistantErrorMessage(err, "Could not apply that suggestion."));
     } finally {
       setApplyingId(null);
     }
@@ -337,7 +468,7 @@ export function GlobalAssistant({ farm }) {
     try {
       await updateActionStatus(action, "dismissed");
     } catch (err) {
-      setError(err?.message || "Could not dismiss suggested action.");
+      setError(assistantErrorMessage(err, "Could not dismiss that suggestion."));
     } finally {
       setApplyingId(null);
     }
@@ -346,7 +477,7 @@ export function GlobalAssistant({ farm }) {
   const emptyText = useMemo(() => (
     mode === "report"
       ? "Generate whole-farm summaries from records, satellite data, finance, documents and compliance."
-      : "Ask about fields, WMS layers, NDVI, SAR, weather, records, inventory, finance, livestock, documents or reports."
+      : "Ask about fields, crop health, weather, records, stock, finance, livestock, documents or reports."
   ), [mode]);
 
   if (!farmId) return null;
@@ -413,9 +544,7 @@ export function GlobalAssistant({ farm }) {
                 <option value="chat">Chat</option>
                 <option value="report">Generate report</option>
               </select>
-              <select value={scope} onChange={(event) => setScope(event.target.value)} style={{ ...inputStyle, width: "auto", minHeight: 34, padding: "6px 8px", fontSize: 12 }}>
-                {SCOPES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-              </select>
+              <Pill tone="neutral">Automatic context</Pill>
               {mode === "report" ? (
                 <select value={reportType} onChange={(event) => setReportType(event.target.value)} style={{ ...inputStyle, width: "auto", minHeight: 34, padding: "6px 8px", fontSize: 12 }}>
                   {REPORT_TYPES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
@@ -455,7 +584,7 @@ export function GlobalAssistant({ farm }) {
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 650, color: brand.forest }}>{action.title}</div>
-                        <div style={{ fontFamily: fonts.mono, fontSize: 9.5, color: brand.muted }}>{actionLabel(action.action_type)}</div>
+                        <div style={{ fontFamily: fonts.mono, fontSize: 9.5, color: brand.muted }}>{actionLabel(intendedActionType(action))}</div>
                       </div>
                       <Pill tone="neutral">{Math.round(Number(action.confidence || 0) * 100)}%</Pill>
                     </div>
@@ -484,7 +613,7 @@ export function GlobalAssistant({ farm }) {
               style={{ ...inputStyle, fontSize: 13, padding: "9px 10px" }}
             />
             <Button size="sm" onClick={send} disabled={busy || (!message.trim() && mode !== "report")}>
-              {mode === "report" ? "Report" : "Send"}
+              {busy ? "Working" : mode === "report" ? "Report" : "Send"}
             </Button>
           </div>
         </div>

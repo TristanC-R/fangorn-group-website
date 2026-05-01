@@ -510,7 +510,7 @@ export function generateFieldBoundariesGeoJSON(fields) {
 export function generateCompliancePack(data) {
   const {
     records, fields, fieldAttrs,
-    assignments, schemeResults, products, year, farmName,
+    plantings, assignments, schemeResults, products, year, farmName,
   } = data;
 
   const inputDiaryCsv = generateInputDiary(records, fields, products, year);
@@ -521,6 +521,32 @@ export function generateCompliancePack(data) {
   const totalAreaHa = (fields || []).reduce((sum, f) => {
     return sum + (f.areaHa ?? polygonAreaHa(f.boundary));
   }, 0);
+  const cropYearRows = (fields || []).map((field) => {
+    const planting = (plantings?.[field.id] || []).find((p) => p.cropYear === year)
+      || (plantings?.[field.id] || []).find((p) => {
+        if (!p?.plantingDate) return false;
+        const plantedYear = new Date(p.plantingDate).getFullYear();
+        return plantedYear === year || plantedYear === year - 1;
+      })
+      || null;
+    return {
+      fieldName: field.name || field.id,
+      crop: planting?.crop || fieldAttrs?.[field.id]?.crop || "",
+      status: planting?.status || fieldAttrs?.[field.id]?.rotationStatus || "",
+      plantingDate: planting?.plantingDate || "",
+      harvestDate: planting?.harvestDate || "",
+      complianceUse: planting?.complianceUse || fieldAttrs?.[field.id]?.complianceUse || "",
+    };
+  });
+  const cropYearTable = cropYearRows.some((row) => row.crop)
+    ? `<h2>Crop Year Context</h2>
+<table>
+  <thead><tr><th>Field</th><th>Crop</th><th>Status</th><th>Planted</th><th>Harvest</th><th>Scheme / compliance use</th></tr></thead>
+  <tbody>
+    ${cropYearRows.map((row) => `<tr><td>${escHtml(row.fieldName)}</td><td>${escHtml(row.crop || "—")}</td><td>${escHtml(row.status || "—")}</td><td>${escHtml(row.plantingDate || "—")}</td><td>${escHtml(row.harvestDate || "—")}</td><td>${escHtml(row.complianceUse || "—")}</td></tr>`).join("")}
+  </tbody>
+</table>`
+    : "";
 
   const summaryHtml = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8">
@@ -532,6 +558,9 @@ export function generateCompliancePack(data) {
   .card { background: #f5f9f2; border-radius: 8px; padding: 1.5rem 2rem; margin: 2rem auto; display: inline-block; text-align: left; }
   .card dt { font-weight: 600; color: #3a6b1e; }
   .card dd { margin: 0 0 0.8rem 0; }
+  table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; text-align: left; font-size: 0.9rem; }
+  th, td { border-bottom: 1px solid #dfe8d7; padding: 0.45rem 0.35rem; }
+  th { color: #3a6b1e; }
   .footer { margin-top: 3rem; font-size: 0.85rem; color: #888; }
 </style></head><body>
 <h1>${escHtml(farmName)}</h1>
@@ -547,6 +576,8 @@ export function generateCompliancePack(data) {
     <dt>Date Generated</dt><dd>${new Date().toISOString().slice(0, 10)}</dd>
   </dl>
 </div>
+
+${cropYearTable}
 
 <h2>Contents</h2>
 <ol style="text-align:left; display:inline-block;">

@@ -367,13 +367,13 @@ function statsFromNumpyBuffer(buf, nodata) {
 
 /**
  * Fetch raw Sentinel-2 bands for a scene×field and compute NDVI, EVI,
- * NDWI, and NDMI in one pass. Returns:
+ * NDWI, NDMI, NDRE, SAVI, and NBR in one pass. Returns:
  *   { ndvi: {mean,min,max,stddev,median,valid_count,total_count,valid_pct},
- *     evi:  {mean}, ndwi: {mean}, ndmi: {mean} }
+ *     evi: {mean}, ndwi: {mean}, ndmi: {mean}, ndre: {mean}, savi: {mean}, nbr: {mean} }
  * or null if zero valid pixels.
  *
  * We request all bands WITHOUT an expression so titiler returns a
- * (7, h, w) numpy array where band order matches the `assets` order.
+ * (9, h, w) numpy array where band order matches the `assets` order.
  * SCL masking is applied client-side: only pixels where SCL ∈ {4,5}
  * (vegetation, not-vegetated) are included.
  */
@@ -384,7 +384,7 @@ export async function multiIndexStatisticsForItem({ collection, itemId, feature 
   const url = new URL(`${DATA_API}/item/crop`);
   url.searchParams.set("collection", collection);
   url.searchParams.set("item", itemId);
-  for (const band of ["B02", "B03", "B04", "B08", "B8A", "B11", "SCL"]) {
+  for (const band of ["B02", "B03", "B04", "B05", "B08", "B8A", "B11", "B12", "SCL"]) {
     url.searchParams.append("assets", band);
   }
   url.searchParams.set("asset_as_band", "true");
@@ -406,8 +406,8 @@ export async function multiIndexStatisticsForItem({ collection, itemId, feature 
 }
 
 /**
- * Parse a multi-band (7, h, w) numpy array and compute per-index stats.
- * Band order: [B02, B03, B04, B08, B8A, B11, SCL].
+ * Parse a multi-band (9, h, w) numpy array and compute per-index stats.
+ * Band order: [B02, B03, B04, B05, B08, B8A, B11, B12, SCL].
  * Only pixels where SCL ∈ {4,5} are used.
  */
 function multiIndexFromNumpyBuffer(buf) {
@@ -439,25 +439,30 @@ function multiIndexFromNumpyBuffer(buf) {
   else if (dims.length === 2) { bands = 1; [h, w] = dims; }
   else return null;
 
-  if (bands < 7) return null;
+  if (bands < 9) return null;
   const pixels = h * w;
 
   const ndviVals = [];
   const eviVals = [];
   const ndwiVals = [];
   const ndmiVals = [];
+  const ndreVals = [];
+  const saviVals = [];
+  const nbrVals = [];
 
   for (let i = 0; i < pixels; i++) {
-    const sclOffset = dataStart + (6 * pixels + i) * bytesPerElem;
+    const sclOffset = dataStart + (8 * pixels + i) * bytesPerElem;
     const scl = Math.round(readFn(sclOffset));
     if (scl !== 4 && scl !== 5) continue;
 
     const b02 = readFn(dataStart + (0 * pixels + i) * bytesPerElem);
     const b03 = readFn(dataStart + (1 * pixels + i) * bytesPerElem);
     const b04 = readFn(dataStart + (2 * pixels + i) * bytesPerElem);
-    const b08 = readFn(dataStart + (3 * pixels + i) * bytesPerElem);
-    const b8a = readFn(dataStart + (4 * pixels + i) * bytesPerElem);
-    const b11 = readFn(dataStart + (5 * pixels + i) * bytesPerElem);
+    const b05 = readFn(dataStart + (3 * pixels + i) * bytesPerElem);
+    const b08 = readFn(dataStart + (4 * pixels + i) * bytesPerElem);
+    const b8a = readFn(dataStart + (5 * pixels + i) * bytesPerElem);
+    const b11 = readFn(dataStart + (6 * pixels + i) * bytesPerElem);
+    const b12 = readFn(dataStart + (7 * pixels + i) * bytesPerElem);
 
     if (!Number.isFinite(b04) || !Number.isFinite(b08)) continue;
 
@@ -488,6 +493,32 @@ function multiIndexFromNumpyBuffer(buf) {
         if (Number.isFinite(ndmi)) ndmiVals.push(ndmi);
       }
     }
+
+    // NDRE = (Red-edge NIR - Red edge 1) / (Red-edge NIR + Red edge 1)
+    // Useful for chlorophyll/N stress after NDVI begins to saturate.
+    if (Number.isFinite(b8a) && Number.isFinite(b05)) {
+      const redEdge = b8a + b05;
+      if (redEdge !== 0) {
+        const ndre = (b8a - b05) / redEdge;
+        if (Number.isFinite(ndre)) ndreVals.push(ndre);
+      }
+    }
+
+    // SAVI with L=0.5, more stable than NDVI over sparse crop/bare soil.
+    const saviDenom = b08 + b04 + 5000;
+    if (saviDenom !== 0) {
+      const savi = 1.5 * (b08 - b04) / saviDenom;
+      if (Number.isFinite(savi) && savi >= -1 && savi <= 1) saviVals.push(savi);
+    }
+
+    // NBR = (NIR - SWIR2) / (NIR + SWIR2), helpful for residue/exposure/damage.
+    if (Number.isFinite(b12)) {
+      const nbrDenom = b08 + b12;
+      if (nbrDenom !== 0) {
+        const nbr = (b08 - b12) / nbrDenom;
+        if (Number.isFinite(nbr)) nbrVals.push(nbr);
+      }
+    }
   }
 
   if (!ndviVals.length) return null;
@@ -514,6 +545,9 @@ function multiIndexFromNumpyBuffer(buf) {
     evi: { mean: eviVals.length ? eviVals.reduce((a, b) => a + b, 0) / eviVals.length : null },
     ndwi: { mean: ndwiVals.length ? ndwiVals.reduce((a, b) => a + b, 0) / ndwiVals.length : null },
     ndmi: { mean: ndmiVals.length ? ndmiVals.reduce((a, b) => a + b, 0) / ndmiVals.length : null },
+    ndre: { mean: ndreVals.length ? ndreVals.reduce((a, b) => a + b, 0) / ndreVals.length : null },
+    savi: { mean: saviVals.length ? saviVals.reduce((a, b) => a + b, 0) / saviVals.length : null },
+    nbr: { mean: nbrVals.length ? nbrVals.reduce((a, b) => a + b, 0) / nbrVals.length : null },
   };
 }
 

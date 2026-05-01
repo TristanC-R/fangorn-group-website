@@ -603,11 +603,63 @@ export function HealthWorkspace({ fields, farmHealth, onNavigate }) {
                     <div
                       style={{
                         marginTop: 8,
-                        display: "flex",
+                        display: "grid",
                         gap: 6,
-                        flexWrap: "wrap",
                       }}
                     >
+                      {rec?.warnings?.length ? (
+                        <div
+                          style={{
+                            padding: "8px 10px",
+                            border: `1px solid ${scoreColor(rec.score)}33`,
+                            background: brand.bgSection,
+                            borderRadius: radius.base,
+                            display: "grid",
+                            gap: 3,
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontFamily: fonts.sans,
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: brand.forest,
+                            }}
+                          >
+                            {rec.warnings[0].title}
+                          </div>
+                          <Body size="sm" color={brand.bodySoft}>
+                            {rec.warnings[0].detail}
+                          </Body>
+                          <Body size="sm" color={brand.muted}>
+                            Next check: {rec.warnings[0].action}
+                          </Body>
+                        </div>
+                      ) : null}
+                      {rec?.metrics ? (
+                        <div
+                          style={{
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: 4,
+                          }}
+                        >
+                          {[
+                            ["NDVI", rec.metrics.ndviMean],
+                            ["NDMI", rec.metrics.ndmiMean],
+                            ["NDRE", rec.metrics.ndreMean],
+                            ["SAVI", rec.metrics.saviMean],
+                          ].map(([label, value]) => Number.isFinite(value) ? (
+                            <Pill
+                              key={label}
+                              tone="neutral"
+                              style={{ textTransform: "none", letterSpacing: "0.04em", fontSize: 9 }}
+                            >
+                              {label} {value.toFixed(2)}
+                            </Pill>
+                          ) : null)}
+                        </div>
+                      ) : null}
                       <button
                         type="button"
                         onClick={(e) => {

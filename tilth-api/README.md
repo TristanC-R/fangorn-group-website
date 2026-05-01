@@ -179,7 +179,7 @@ No credentials are required for public read. For production it is **strongly rec
 | POST | `/api/fields/:id/ndvi/refresh` | Auth required. Optional JSON body `{ lookbackDays, maxCloudCover, sceneLimit, force }`. Enqueues an ingest pass for one field. With `force: true` the cached rows for the field are wiped first — useful after a methodology change (e.g. enabling SCL masking). |
 | GET | `/api/fields/:id/ndvi` | Auth required. Returns cached scene rows for one field (the same rows the frontend gets via Realtime). |
 | GET | `/api/sentinel/tiles/:item/:z/:x/:y.png?collection=...&rescale=...&colormap=...` | Open. Proxies one titiler-rendered NDVI tile, LRU-cached server-side. |
-| GET | `/api/sentinel/status` | Open. MPC config summary + ingest queue counters + tile-cache size. Useful for the workspace's "needs feed" badge. |
+| GET | `/api/sentinel/status` | Auth required. MPC config summary + ingest queue counters + tile-cache size. Useful for the workspace's "needs feed" badge. |
 
 ### Tunable env vars
 
@@ -236,7 +236,7 @@ The pipeline mirrors NDVI exactly:
 |--------|------|---------|
 | POST | `/api/fields/:id/sar/refresh` | Auth required. Optional JSON body `{ lookbackDays, sceneLimit, force }`. Enqueues a SAR ingest pass for one field. |
 | GET | `/api/fields/:id/sar` | Auth required. Returns cached SAR scene rows (one row per Sentinel-1 RTC item: VV, VH, VH·VV ratio in linear and dB; orbit state and relative orbit). |
-| GET | `/api/sentinel1/status` | Open. SAR ingest queue counters. |
+| GET | `/api/sentinel1/status` | Auth required. SAR ingest queue counters. |
 
 ### Tunable env vars (SAR)
 

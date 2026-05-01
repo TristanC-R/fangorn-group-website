@@ -183,6 +183,12 @@ export const tilthStore = {
   saveFieldAttrs(farmId, map) {
     writeRaw("fieldAttrs", farmId, map);
   },
+  loadRotations(farmId) {
+    return readRaw("rotations", farmId, {});
+  },
+  saveRotations(farmId, map) {
+    writeRaw("rotations", farmId, map);
+  },
 
   /**
    * Planting history — array of planting events per field.
@@ -319,6 +325,6 @@ export const tilthStore = {
 
 /** Helper for tests / "start over" buttons — wipe everything for a farm. */
 export function resetFarmStore(farmId) {
-  const nses = ["records", "assignments", "yield", "fieldAttrs", "plantings"];
+  const nses = ["records", "assignments", "yield", "fieldAttrs", "plantings", "rotations"];
   for (const ns of nses) writeRaw(ns, farmId, ns === "records" ? [] : {});
 }

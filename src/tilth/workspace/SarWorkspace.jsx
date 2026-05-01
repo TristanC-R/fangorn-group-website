@@ -656,7 +656,7 @@ export function SarWorkspace({ fields }) {
       {queueBusy ? (
         <Pill
           tone="info"
-          title={`Tilth API SAR queue: ${queueStatus.inflight} in-flight, ${queueStatus.queued} queued (workers ${queueStatus.workers}/${queueStatus.concurrency}).`}
+          title={`${queueStatus.inflight} field update(s) are being processed and ${queueStatus.queued} are waiting.`}
           style={{ textTransform: "none", letterSpacing: "0.06em" }}
         >
           Ingest queue · {queueStatus.inflight} processing

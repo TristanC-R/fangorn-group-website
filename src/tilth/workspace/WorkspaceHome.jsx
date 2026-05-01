@@ -282,6 +282,36 @@ export function WorkspaceHome({ farm, fields, onNavigate, onMapFields }) {
         className="tilth-scroll"
         style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", overflowX: "hidden", paddingRight: 4, paddingBottom: 4 }}
       >
+        {!hasFields ? (
+          <Card
+            padding={18}
+            tone="section"
+            style={{
+              marginBottom: 14,
+              borderColor: brand.moss,
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 1fr) auto",
+              gap: 14,
+              alignItems: "center",
+            }}
+            className="tilth-mobile-card tilth-mobile-stack"
+          >
+            <div>
+              <Kicker style={{ marginBottom: 8 }}>First setup</Kicker>
+              <div style={{ fontFamily: fonts.serif, fontSize: 22, color: brand.forest, marginBottom: 6 }}>
+                Map a field when you are ready
+              </div>
+              <Body size="sm" style={{ maxWidth: 680 }}>
+                Weather, records, crop health, reports, and field notes all work better once Tilth
+                knows your field boundaries. You can come back to this step at any time.
+              </Body>
+            </div>
+            <Button variant="primary" size="sm" onClick={onMapFields}>
+              Resume field mapping
+            </Button>
+          </Card>
+        ) : null}
+
         {/* Stats strip */}
         <div className="tilth-home-stats" style={{ display: "grid", gridTemplateColumns: "repeat(12, minmax(0, 1fr))", gap: 10, marginBottom: 14 }}>
           <div style={{ gridColumn: "span 2", minWidth: 0 }}>
@@ -334,7 +364,13 @@ export function WorkspaceHome({ farm, fields, onNavigate, onMapFields }) {
                   <Body size="sm" style={{ color: brand.muted }}>No urgent actions right now. Keep an eye on the crop calendar below.</Body>
                 </div>
               ) : (
-                <Body size="sm" style={{ color: brand.muted }}>Map your first field to start receiving action items.</Body>
+                <div style={{ padding: "12px 0", textAlign: "center" }}>
+                  <div style={{ fontFamily: fonts.serif, fontSize: 18, color: brand.forest, marginBottom: 4 }}>No farm actions yet</div>
+                  <Body size="sm" style={{ color: brand.muted, marginBottom: 10 }}>
+                    Add your first field or calendar job to start building the daily action list.
+                  </Body>
+                  <Button variant="secondary" size="sm" onClick={onMapFields}>Map first field</Button>
+                </div>
               )}
             </Card>
 
@@ -383,16 +419,19 @@ export function WorkspaceHome({ farm, fields, onNavigate, onMapFields }) {
               <Kicker style={{ marginBottom: 8 }}>Quick actions</Kicker>
               <div style={{ display: "grid", gap: 4 }}>
                 {[
+                  !hasFields ? { id: "fields", label: "Map first field", sub: "Start setup" } : null,
                   { id: "records", label: "Log application", sub: "Record a spray or fertiliser" },
                   { id: "calendar", label: "Today's jobs", sub: "Plan your day" },
-                  { id: "livestock", label: "Livestock", sub: "Animals, meds & movements" },
-                  { id: "insights", label: "Crop health", sub: "What needs attention" },
                   { id: "inventory", label: "Store", sub: "Chemical & seed stock" },
-                  { id: "finance", label: "Money in/out", sub: "Income or expense" },
+                  { id: "observations", label: "Add observation", sub: "Field note or photo" },
                   { id: "documents", label: "Find paperwork", sub: "Certificates & receipts" },
-                  { id: "reports", label: "Make report", sub: "Weekly / monthly / quarterly" },
-                ].map((item) => (
-                  <Row key={item.id} onClick={() => onNavigate(item.id)} style={{ padding: "7px 8px" }}>
+                  { id: "contacts", label: "Contacts", sub: "Suppliers and advisers" },
+                ].filter(Boolean).map((item) => (
+                  <Row
+                    key={item.id}
+                    onClick={() => (item.id === "fields" && !hasFields ? onMapFields() : onNavigate(item.id))}
+                    style={{ padding: "7px 8px" }}
+                  >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                       <span style={{ fontWeight: 600, color: brand.forest, fontSize: 12 }}>{item.label}</span>
                       <span style={{ fontFamily: fonts.mono, fontSize: 9, color: brand.muted, letterSpacing: "0.06em" }}>{item.sub}</span>

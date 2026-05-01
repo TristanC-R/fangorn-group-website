@@ -130,8 +130,8 @@ function addDaysIso(dateStr, days) {
 
 function calendarErrorMessage(err, fallback = "Google Calendar request failed.") {
   const raw = err?.message || String(err || "");
-  if (/failed to fetch|networkerror|load failed/i.test(raw)) {
-    return "Could not reach the Tilth API. Check that npm run tilth-api is running, then try again.";
+  if (/failed to fetch|networkerror|load failed|not configured|tilth api|supabase/i.test(raw)) {
+    return "Calendar sync is not reachable right now. Check your connection and try again.";
   }
   return raw || fallback;
 }
@@ -176,7 +176,7 @@ function CalendarSyncCard({ farmId, tasks }) {
   const apiBase = getTilthApiBase();
 
   const authHeaders = useCallback(async () => {
-    if (!supabase) throw new Error("Supabase is not configured.");
+    if (!supabase) throw new Error("Calendar sync is not available.");
     const { data } = await supabase.auth.getSession();
     const token = data?.session?.access_token;
     if (!token) throw new Error("You need to be signed in.");
@@ -207,7 +207,7 @@ function CalendarSyncCard({ farmId, tasks }) {
     setBusy(true);
     setMessage("");
     try {
-      if (!apiBase) throw new Error("Tilth API is not configured.");
+      if (!apiBase) throw new Error("Calendar sync is not available.");
       const headers = await authHeaders();
       const res = await fetch(`${apiBase}/api/calendar/google/connect`, {
         method: "POST",
@@ -227,7 +227,7 @@ function CalendarSyncCard({ farmId, tasks }) {
     setBusy(true);
     setMessage("");
     try {
-      if (!apiBase) throw new Error("Tilth API is not configured.");
+      if (!apiBase) throw new Error("Calendar sync is not available.");
       const headers = await authHeaders();
       const res = await fetch(`${apiBase}/api/calendar/google/sync`, {
         method: "POST",
@@ -249,7 +249,7 @@ function CalendarSyncCard({ farmId, tasks }) {
     setBusy(true);
     setMessage("");
     try {
-      if (!apiBase) throw new Error("Tilth API is not configured.");
+      if (!apiBase) throw new Error("Calendar sync is not available.");
       const headers = await authHeaders();
       const res = await fetch(`${apiBase}/api/calendar/google/disconnect`, {
         method: "POST",
@@ -291,7 +291,7 @@ function CalendarSyncCard({ farmId, tasks }) {
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {!apiBase ? (
-            <Pill tone="warn">API not configured</Pill>
+            <Pill tone="warn">Sync unavailable</Pill>
           ) : status.connected ? (
             <>
               <Button size="sm" onClick={sync} disabled={busy || !dueTasks}>Sync now</Button>
@@ -668,7 +668,7 @@ function TaskRow({ task, fields, compact, onToggle, onDelete }) {
 
 // ─── Task List View ───────────────────────────────────────────────────
 
-function ListView({ tasks, setTasks, fields, selectedDate, onClearSelectedDate, onDelete }) {
+function ListView({ tasks, setTasks, fields, selectedDate, onClearSelectedDate, onDelete, onAddTask }) {
   const [filterStatus, setFilterStatus] = useState("");
   const [filterCategory, setFilterCategory] = useState("");
   const [filterPriority, setFilterPriority] = useState("");
@@ -792,9 +792,20 @@ function ListView({ tasks, setTasks, fields, selectedDate, onClearSelectedDate, 
 
       {filtered.length === 0 ? (
         <EmptyState
-          kicker="No tasks"
-          title="Nothing here"
-          description="No tasks match your current filters."
+          kicker={tasks.length === 0 ? "First job" : "No tasks"}
+          title={tasks.length === 0 ? "Add your first farm job" : "Nothing here"}
+          description={
+            tasks.length === 0
+              ? "Use tasks for spraying plans, inspections, deliveries, vet visits, document renewals, and anything you want on the farm calendar."
+              : "No tasks match your current filters. Clear the filters or choose another date."
+          }
+          actions={
+            tasks.length === 0 ? (
+              <Button variant="primary" size="sm" onClick={onAddTask}>Add first job</Button>
+            ) : selectedDate ? (
+              <Button variant="secondary" size="sm" onClick={onClearSelectedDate}>Show all tasks</Button>
+            ) : null
+          }
         />
       ) : (
         <div style={{ display: "grid", gap: 4 }}>
@@ -1157,6 +1168,7 @@ export function CalendarWorkspace({ farm, fields }) {
                 selectedDate={selectedDate}
                 onClearSelectedDate={() => setSelectedDate(null)}
                 onDelete={handleDeleteTask}
+                onAddTask={() => setShowAddForm(true)}
               />
             )}
           </>

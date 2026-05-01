@@ -336,7 +336,7 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
               ? "Address not found — pan and zoom to your farm on the map."
               : email
                 ? "Address not found — pan and zoom to your farm on the map."
-                : "Address not found — add VITE_NOMINATIM_CONTACT_EMAIL in .env (Nominatim policy), or run the Tilth API with OSM_CONTACT_EMAIL, then reload."
+                : "Address not found — pan and zoom to your farm on the map."
           );
         }
       } catch {
@@ -373,7 +373,7 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
       if (!outline) {
         setLastFoundOutline(null);
         setFormError(
-          "No mapped OSM landuse polygon contains that click — try another spot, zoom in, or use Draw boundary."
+          "We could not find a saved boundary at that point. Try another spot, zoom in, or draw the field by hand."
         );
         return;
       }
@@ -438,10 +438,10 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
       if (e?.name === "AbortError" || ac.signal.aborted) return;
       if (e?.status === 429) {
         setFormError(
-          "Overpass rate-limited (HTTP 429). Wait ~10–30 seconds, then click again. Running the local Tilth API will also smooth this out by queuing + caching requests."
+          "The boundary lookup is busy. Wait a few seconds, then click again or draw the field by hand."
         );
       } else {
-        setFormError(String(e?.message || e));
+        setFormError("We could not look up that boundary. Try again or draw the field by hand.");
       }
     } finally {
       if (findFieldAbortRef.current === ac) {
@@ -465,7 +465,7 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
     }
     if (draftRing.length < 3) {
       setFormError(
-        "Use Find field (OSM) on the paddock, or Draw boundary, then Save field."
+        "Find an existing boundary or click around the field to draw one before saving."
       );
       return;
     }
@@ -551,19 +551,9 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
             maxWidth: 820,
           }}
         >
-          Choose <strong>Find field (OSM)</strong>, click inside a paddock — we run a single Overpass
-          lookup around that point and, if volunteers mapped a matching{" "}
-          <strong>farmland, meadow, orchard, farmyard, or vineyard</strong> polygon that contains your
-          click, we load <strong>that one outline</strong> into your draft (smallest match if several
-          overlap). Nothing is pre-cached as you pan. Coverage is <strong>not guaranteed</strong>. Use{" "}
-          <strong>Draw boundary</strong> when OSM has no match. Geocoding uses Nominatim via{" "}
-          <code style={{ fontSize: 13 }}>VITE_TILTH_API_URL</code> (your Node Tilth API) or, without
-          that, <code style={{ fontSize: 13 }}>VITE_NOMINATIM_CONTACT_EMAIL</code> for direct browser
-          calls. Respect{" "}
-          <a href="https://operations.osmfoundation.org/policies/overpass/" style={{ color: brand.forest }}>
-            Overpass fair-use limits
-          </a>
-          .
+          Start by finding your farm on the map. If a boundary is already available,
+          click inside the field to use it. If not, choose <strong>Draw boundary</strong> and click
+          around the field corners. Add a name, save, then repeat for the fields you want in Tilth.
         </p>
 
         <div
@@ -587,7 +577,7 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
             >
               {[
                 ["pan", "Pan map"],
-                ["find", "Find field (OSM)"],
+                ["find", "Use saved boundary"],
                 ["draw", "Draw boundary"],
               ].map(([id, label]) => (
                 <button
@@ -675,9 +665,9 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
               }}
             >
               {geocodeNote ? `${geocodeNote} ` : ""}
-              Left-drag pans in Pan map · Wheel zooms · Find field (OSM): one click queries OSM at that
-              spot · Draw boundary: click vertices · Draft points: <strong>{draftRing.length}</strong>
-              {outlineBusy ? " · OSM lookup…" : ""}
+              Drag to move the map · Scroll to zoom · Use saved boundary or draw your own ·
+              Boundary points: <strong>{draftRing.length}</strong>
+              {outlineBusy ? " · Looking for a boundary…" : ""}
               {fields?.length ? (
                 <>
                   {" "}
@@ -697,8 +687,8 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
           >
             {lastFoundOutline ? (
               <div style={{ marginBottom: 14 }}>
-                <FieldLabel>Selected OSM polygon metadata</FieldLabel>
-                <div
+                <FieldLabel>Selected boundary</FieldLabel>
+                <details
                   style={{
                     border: `1px solid ${brand.border}`,
                     borderRadius: 2,
@@ -706,6 +696,17 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
                     padding: 10,
                   }}
                 >
+                  <summary
+                    style={{
+                      cursor: "pointer",
+                      fontFamily: "'DM Sans', system-ui, sans-serif",
+                      fontSize: 13,
+                      color: brand.forest,
+                      fontWeight: 600,
+                    }}
+                  >
+                    Boundary found. Open technical details.
+                  </summary>
                   <div
                     style={{
                       fontFamily: "'JetBrains Mono', ui-monospace, monospace",
@@ -742,7 +743,7 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
                   >
                     {JSON.stringify(lastFoundOutline.element || lastFoundOutline.tags || {}, null, 2)}
                   </div>
-                </div>
+                </details>
               </div>
             ) : null}
 
@@ -759,14 +760,14 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
                 lineHeight: 1.5,
               }}
             >
-              <strong style={{ color: brand.forest }}>OSM field lookup</strong>
+              <strong style={{ color: brand.forest }}>Use a saved boundary</strong>
               {!mapView ? " — waiting for map." : null}
-              {mapView && outlineBusy ? " — querying Overpass for one polygon at your click…" : null}
+              {mapView && outlineBusy ? " — looking for a boundary at your click…" : null}
               {mapView && !outlineBusy ? (
                 <>
                   {" "}
-                  — switch to <strong>Find field (OSM)</strong>, click inside a mapped paddock; we return
-                  at most one boundary.
+                  — choose <strong>Use saved boundary</strong>, then click inside a field. If nothing
+                  appears, use <strong>Draw boundary</strong>.
                 </>
               ) : null}
             </div>
@@ -799,8 +800,8 @@ export function FieldsSetup({ farm, fields, onFieldsUpdated, onSkip, onDone }) {
                 lineHeight: 1.5,
               }}
             >
-              The <strong>orange</strong> line is your draft boundary. <strong>Find field (OSM)</strong>{" "}
-              replaces it when a polygon is found. On save, the ring is closed automatically if needed.
+              The <strong>orange</strong> line is your draft boundary. A saved boundary can fill it
+              for you; drawing lets you place the corners yourself.
             </div>
 
             {formError && (

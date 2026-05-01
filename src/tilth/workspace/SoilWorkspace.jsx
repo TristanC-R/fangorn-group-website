@@ -751,9 +751,9 @@ function StatusBadge({ apiBase, needsTenantConfig, id }) {
           textTransform: "uppercase",
           color: brand.amber,
         }}
-        title="Set VITE_TILTH_API_URL and run `npm run tilth-api` to enable overlays."
+        title="Map layers are not available right now."
       >
-        Proxy offline
+        Layers offline
       </span>
     );
   }
@@ -768,8 +768,8 @@ function StatusBadge({ apiBase, needsTenantConfig, id }) {
       }}
       title={
         needsTenantConfig
-          ? "Provider may need per-tenant URL configuration in tilth-api/layers.json"
-          : `Proxied via ${apiBase}/api/wms/${id}`
+          ? "This layer needs setup before it can be shown."
+          : `Layer service ready: ${id}`
       }
     >
       {needsTenantConfig ? "Check config" : "Live"}
@@ -778,10 +778,10 @@ function StatusBadge({ apiBase, needsTenantConfig, id }) {
 }
 
 function LayerStatusPill({ apiBase, manifestState }) {
-  if (!apiBase) return <Pill tone="warn">Backend proxy offline</Pill>;
-  if (manifestState === "loading") return <Pill tone="neutral">Loading manifest…</Pill>;
-  if (manifestState === "error") return <Pill tone="warn">Manifest error · using fallback</Pill>;
-  return <Pill tone="ok">Backend proxy online</Pill>;
+  if (!apiBase) return <Pill tone="warn">Map layers offline</Pill>;
+  if (manifestState === "loading") return <Pill tone="neutral">Loading layers…</Pill>;
+  if (manifestState === "error") return <Pill tone="warn">Some layers unavailable</Pill>;
+  return <Pill tone="ok">Map layers online</Pill>;
 }
 
 /**

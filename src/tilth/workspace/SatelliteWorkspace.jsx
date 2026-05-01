@@ -949,7 +949,7 @@ export function SatelliteWorkspace({ fields }) {
       {queueBusy ? (
         <Pill
           tone="info"
-          title={`Tilth API ingest queue: ${queueStatus.inflight} in-flight, ${queueStatus.queued} queued (workers ${queueStatus.workers}/${queueStatus.concurrency}). Field-create and field-edit auto-trigger NDVI ingests, so this can carry leftover work from earlier sessions.`}
+          title={`${queueStatus.inflight} field update(s) are being processed and ${queueStatus.queued} are waiting.`}
           style={{ textTransform: "none", letterSpacing: "0.06em" }}
         >
           Ingest queue · {queueStatus.inflight} processing
@@ -982,7 +982,7 @@ export function SatelliteWorkspace({ fields }) {
         <SectionHeader
           kicker="Remote sensing"
           title="Vegetation indices"
-          description="Sentinel-2 optical imagery — NDVI, EVI, NDWI and NDMI per field. Select a scene to see pixel-level detail on the map. New data arrives automatically."
+          description="Sentinel-2 optical imagery — NDVI, EVI, NDWI, NDMI, NDRE, SAVI and NBR per field. These low-cost indices support crop-stage, moisture, canopy, and stress warnings."
           actions={headerActions}
         />
       }
@@ -1132,6 +1132,15 @@ export function SatelliteWorkspace({ fields }) {
                       )}
                       {Number.isFinite(selectedActive.ndmi_mean) && (
                         <Pill tone={selectedActive.ndmi_mean < -0.1 ? "warn" : "neutral"} title="Normalised Difference Moisture Index — canopy/soil moisture">NDMI {fmtNdvi(selectedActive.ndmi_mean)}</Pill>
+                      )}
+                      {Number.isFinite(selectedActive.ndre_mean) && (
+                        <Pill tone={selectedActive.ndre_mean < 0.18 ? "warn" : "neutral"} title="Normalised Difference Red Edge — chlorophyll/nitrogen stress signal">NDRE {fmtNdvi(selectedActive.ndre_mean)}</Pill>
+                      )}
+                      {Number.isFinite(selectedActive.savi_mean) && (
+                        <Pill tone={selectedActive.savi_mean < 0.22 ? "warn" : "neutral"} title="Soil Adjusted Vegetation Index — useful in sparse canopy and early growth">SAVI {fmtNdvi(selectedActive.savi_mean)}</Pill>
+                      )}
+                      {Number.isFinite(selectedActive.nbr_mean) && (
+                        <Pill tone="neutral" title="Normalised Burn Ratio — useful for residue, exposed soil, and damage context">NBR {fmtNdvi(selectedActive.nbr_mean)}</Pill>
                       )}
                     </span>
                   ) : null
@@ -1615,6 +1624,9 @@ function SceneScrubber({ scenes, activeItemId, onPick, suspectIds }) {
         if (Number.isFinite(s.evi_mean)) titleParts.push(`EVI ${fmtNdvi(s.evi_mean)}`);
         if (Number.isFinite(s.ndwi_mean)) titleParts.push(`NDWI ${fmtNdvi(s.ndwi_mean)}`);
         if (Number.isFinite(s.ndmi_mean)) titleParts.push(`NDMI ${fmtNdvi(s.ndmi_mean)}`);
+        if (Number.isFinite(s.ndre_mean)) titleParts.push(`NDRE ${fmtNdvi(s.ndre_mean)}`);
+        if (Number.isFinite(s.savi_mean)) titleParts.push(`SAVI ${fmtNdvi(s.savi_mean)}`);
+        if (Number.isFinite(s.nbr_mean)) titleParts.push(`NBR ${fmtNdvi(s.nbr_mean)}`);
         if (cloud) titleParts.push(`cloud ${cloud}`);
         if (isSuspect) titleParts.push("⚠ likely cloud-contaminated");
         return (

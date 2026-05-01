@@ -43,7 +43,7 @@ export const shadow = {
   inset: "inset 0 0 0 1px rgba(16,78,63,0.04)",
 };
 
-export const radius = { base: 2, pill: 999 };
+export const radius = { base: 2, lg: 10, pill: 999 };
 
 export const inputStyle = {
   width: "100%",
@@ -144,13 +144,13 @@ export const SECTIONS = {
     id: "sensing",
     label: "Satellite maps",
     kicker: "Satellite",
-    blurb: "NDVI, radar, and terrain data.",
+    blurb: "Field condition maps and terrain data.",
   },
   soil: {
     id: "soil",
     label: "Soil & land",
     kicker: "Environmental",
-    blurb: "Soil, geology & land-use overlays.",
+    blurb: "Soil, geology, and land-use maps.",
   },
   weather: {
     id: "weather",

@@ -1596,6 +1596,63 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && pathname === "/api/farms/current") {
+    try {
+      const auth = await authenticatedUser(req);
+      if (auth.error) return json(res, auth.error.status, auth.error.body);
+      const admin = adminClient();
+      if (!admin) return json(res, 503, { error: "supabase service not configured" });
+
+      const { data: owned, error: ownedError } = await admin
+        .from("farms")
+        .select("*")
+        .eq("owner_user_id", auth.userId)
+        .order("created_at", { ascending: true })
+        .limit(1);
+      if (ownedError) throw new Error(ownedError.message);
+      if (owned?.[0]) return json(res, 200, { ok: true, farm: owned[0], source: "owner" });
+
+      const { data: memberships, error: memberError } = await admin
+        .from("farm_members")
+        .select("role, farms(*)")
+        .eq("user_id", auth.userId)
+        .order("created_at", { ascending: true })
+        .limit(1);
+      if (memberError) throw new Error(memberError.message);
+      return json(res, 200, {
+        ok: true,
+        farm: memberships?.[0]?.farms || null,
+        source: memberships?.[0] ? "member" : "none",
+      });
+    } catch (err) {
+      json(res, 500, { error: err?.message || "could not load farm" });
+    }
+    return;
+  }
+
+  const farmFieldsMatch = /^\/api\/farms\/([^/]+)\/fields$/.exec(pathname);
+  if (req.method === "GET" && farmFieldsMatch) {
+    try {
+      const auth = await authenticatedUser(req);
+      if (auth.error) return json(res, auth.error.status, auth.error.body);
+      const admin = adminClient();
+      if (!admin) return json(res, 503, { error: "supabase service not configured" });
+      const farmId = decodeURIComponent(farmFieldsMatch[1]);
+      const canRead = await userCanReadFarm(auth.userId, farmId);
+      if (!canRead) return json(res, 403, { error: "farm not found or access denied" });
+      const { data, error } = await admin
+        .from("tilth_fields")
+        .select("*")
+        .eq("farm_id", farmId)
+        .order("created_at", { ascending: true });
+      if (error) throw new Error(error.message);
+      return json(res, 200, { ok: true, fields: data || [] });
+    } catch (err) {
+      json(res, 500, { error: err?.message || "could not load fields" });
+    }
+    return;
+  }
+
   if (pathname.startsWith("/api/document-vault/")) {
     const handled = await handleDocumentVaultRoute(req, res, u, json);
     if (handled) return;
@@ -2058,6 +2115,11 @@ const server = http.createServer(async (req, res) => {
   // second `server.on('request')` would never see anything reach it.)
 
   if (req.method === "GET" && pathname === "/api/extract/queue") {
+    const auth = await authenticatedUser(req);
+    if (auth.error) {
+      json(res, auth.error.status, auth.error.body);
+      return;
+    }
     json(res, 200, { ok: true, ...queueStatus(), supabase: supabaseConfigured });
     return;
   }
@@ -2228,7 +2290,7 @@ const server = http.createServer(async (req, res) => {
       const { data, error } = await admin
         .from("tilth_field_ndvi")
         .select(
-          "item_id, collection, scene_datetime, scene_week, scene_year, scene_cloud_pct, ndvi_mean, ndvi_min, ndvi_max, ndvi_median, ndvi_stddev, valid_pixel_count, total_pixel_count, field_cloud_pct, status, error_message, updated_at"
+          "item_id, collection, scene_datetime, scene_week, scene_year, scene_cloud_pct, ndvi_mean, ndvi_min, ndvi_max, ndvi_median, ndvi_stddev, evi_mean, ndwi_mean, ndmi_mean, ndre_mean, savi_mean, nbr_mean, valid_pixel_count, total_pixel_count, field_cloud_pct, status, error_message, updated_at"
         )
         .eq("field_id", auth.field.id)
         .order("scene_datetime", { ascending: false });
@@ -2340,6 +2402,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/api/sentinel/status") {
+    const auth = await authenticatedUser(req);
+    if (auth.error) {
+      json(res, auth.error.status, auth.error.body);
+      return;
+    }
     json(res, 200, {
       ok: true,
       mpc: mpcConfigSummary(),
@@ -2533,6 +2600,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/api/sentinel1/status") {
+    const auth = await authenticatedUser(req);
+    if (auth.error) {
+      json(res, auth.error.status, auth.error.body);
+      return;
+    }
     json(res, 200, {
       ok: true,
       queue: sarQueueStatus(),
@@ -2616,6 +2688,11 @@ const server = http.createServer(async (req, res) => {
 
   // --- Auto-refresh scheduler --------------------------------------------
   if (req.method === "GET" && pathname === "/api/sentinel/scheduler/status") {
+    const auth = await authenticatedUser(req);
+    if (auth.error) {
+      json(res, auth.error.status, auth.error.body);
+      return;
+    }
     json(res, 200, { ok: true, scheduler: refreshSchedulerStatus() });
     return;
   }
@@ -2624,6 +2701,11 @@ const server = http.createServer(async (req, res) => {
   // header. The actual sweep runs with the service role.
   if (req.method === "POST" && pathname === "/api/sentinel/scheduler/run") {
     try {
+      const auth = await authenticatedUser(req);
+      if (auth.error) {
+        json(res, auth.error.status, auth.error.body);
+        return;
+      }
       const result = await runRefreshSweep({ trigger: "manual" });
       json(res, 200, { ok: result.ok, result, scheduler: refreshSchedulerStatus() });
     } catch (e) {
@@ -2691,6 +2773,26 @@ async function authenticatedUser(req) {
     return { error: { status: 401, body: { error: "invalid or expired jwt" } } };
   }
   return { userId };
+}
+
+async function userCanReadFarm(userId, farmId) {
+  if (!userId || !farmId) return false;
+  const admin = adminClient();
+  if (!admin) return false;
+  const { data: farm } = await admin
+    .from("farms")
+    .select("id")
+    .eq("id", farmId)
+    .eq("owner_user_id", userId)
+    .maybeSingle();
+  if (farm) return true;
+  const { data: member } = await admin
+    .from("farm_members")
+    .select("id")
+    .eq("farm_id", farmId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  return Boolean(member);
 }
 
 async function userCanEditFarm(userId, farmId) {
@@ -2993,7 +3095,7 @@ async function authenticatedField(req, fieldId) {
   }
   const field = await fetchOwnedField(userId, fieldId);
   if (!field) {
-    return { error: { status: 404, body: { error: "field not found or not owned by user" } } };
+    return { error: { status: 404, body: { error: "field not found or access denied" } } };
   }
   let boundary = [];
   try {
@@ -3021,6 +3123,8 @@ async function authenticatedField(req, fieldId) {
 server.listen(PORT, () => {
   console.log(`Tilth API listening on http://0.0.0.0:${PORT}`);
   console.log(`CORS origins: ${CORS_ORIGINS.join(", ") || "(none)"}`);
+  console.log(`Platform assistant OpenAI: ${process.env.OPENAI_API_KEY ? "enabled" : "missing OPENAI_API_KEY"}`);
+  console.log(`Platform assistant model: ${process.env.PLATFORM_ASSISTANT_CHAT_MODEL || process.env.DOCUMENT_VAULT_CHAT_MODEL || "gpt-4o-mini"} | timeout ${Math.round(Number(process.env.PLATFORM_ASSISTANT_OPENAI_TIMEOUT_MS || 60_000) / 1000)}s`);
   console.log(`WMS overlay layers: ${Object.keys(WMS_LAYERS).length}`);
   console.log(
     `Extraction: ${supabaseConfigured ? "enabled" : "disabled (set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY)"} | extractable layers: ${extractableLayerIds().length}`
@@ -3039,4 +3143,11 @@ server.listen(PORT, () => {
   } else {
     console.log("[refreshScheduler] skipped — supabase not configured");
   }
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL uncaughtException]", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[WARN unhandledRejection]", reason);
 });

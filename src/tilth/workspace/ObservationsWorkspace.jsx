@@ -31,6 +31,11 @@ function fieldName(f) {
   return f?.name || f?.id?.slice(0, 8) || "Field";
 }
 
+function observationFieldLabel(obs, fieldMap) {
+  const f = fieldMap.get(obs.fieldId);
+  return f ? fieldName(f) : obs.fieldName || obs.fieldId?.slice(0, 24) || "Field";
+}
+
 function fmtDate(iso) {
   if (!iso) return "";
   try {
@@ -291,7 +296,6 @@ export function ObservationsWorkspace({ farm, fields }) {
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                     {items.map((obs) => {
                       const expanded = expandedId === obs.id;
-                      const f = fieldMap.get(obs.fieldId);
                       return (
                         <Card
                           key={obs.id}
@@ -312,7 +316,7 @@ export function ObservationsWorkspace({ farm, fields }) {
                               <div className="tilth-observation-card-meta" style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
                                 <ObsTypePill type={obs.type} />
                                 <span style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: brand.forest }}>
-                                  {f ? fieldName(f) : obs.fieldId?.slice(0, 8)}
+                                  {observationFieldLabel(obs, fieldMap)}
                                 </span>
                                 <span style={{ fontFamily: fonts.mono, fontSize: 10, color: brand.muted, marginLeft: "auto" }}>
                                   {fmtTime(obs.datetime)}

@@ -1,4 +1,4 @@
-import { getTilthApiBase } from "./tilthApi.js";
+import { fetchTilthApi, tilthApiConfigured } from "./tilthApi.js";
 
 export const FALLBACK_MARKET_ROWS = [
   { id: "feed-wheat", market: "cereals", commodity: "Feed Wheat", price: 190, unit: "£/t", source: "Local reference", trend: "flat", stale: true, confidence: "reference" },
@@ -18,8 +18,7 @@ export const FALLBACK_MARKET_ROWS = [
 ];
 
 export async function fetchMarketPrices({ refresh = false, signal } = {}) {
-  const apiBase = getTilthApiBase();
-  if (!apiBase) {
+  if (!tilthApiConfigured()) {
     return {
       ok: false,
       mode: "offline",
@@ -29,7 +28,7 @@ export async function fetchMarketPrices({ refresh = false, signal } = {}) {
     };
   }
   const suffix = refresh ? "?refresh=1" : "";
-  const res = await fetch(`${apiBase}/api/market/prices${suffix}`, {
+  const res = await fetchTilthApi(`/api/market/prices${suffix}`, {
     headers: { Accept: "application/json" },
     signal,
   });

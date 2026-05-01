@@ -125,9 +125,12 @@ export function computeFieldMargin(fieldId, records, yieldStore, plantings, prod
   }) || fieldPlantings[0] || null;
 
   const cropName = planting?.crop || null;
-  const pricePerTonne = cropName ? commodityPrice(cropName) : null;
+  const pricePerTonne = Number.isFinite(Number(planting?.expectedPrice))
+    ? Number(planting.expectedPrice)
+    : cropName ? commodityPrice(cropName) : null;
 
-  const yieldTHa = yieldStore?.[year]?.[fieldId] ?? null;
+  const yieldTHa = yieldStore?.[year]?.[fieldId]
+    ?? (Number.isFinite(Number(planting?.targetYield)) ? Number(planting.targetYield) : null);
   const revenue = (yieldTHa != null && pricePerTonne != null)
     ? yieldTHa * pricePerTonne
     : null;
@@ -159,6 +162,12 @@ export function computeFieldMargin(fieldId, records, yieldStore, plantings, prod
     const bucket = categorise(prod);
     const perHaCost = areaHa > 0 ? (cost * rate * area) / areaHa : 0;
     costBreakdown[bucket] += perHaCost;
+  }
+
+  if (variableCosts === 0 && Number.isFinite(Number(planting?.variableCostPerHa))) {
+    const plannedCost = Number(planting.variableCostPerHa) * (areaHa || 1);
+    variableCosts = plannedCost;
+    costBreakdown.other += Number(planting.variableCostPerHa);
   }
 
   const grossMargin = revenue != null ? revenue * (areaHa || 1) - variableCosts : null;

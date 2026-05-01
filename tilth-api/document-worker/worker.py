@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -15,7 +16,9 @@ from graph import GraphLoader
 
 
 WORKER_DIR = Path(__file__).resolve().parent
+# Shared secrets with tilth-api; optional `document-worker/.env` overrides for local runs.
 load_dotenv(WORKER_DIR.parent / ".env")
+load_dotenv(WORKER_DIR / ".env", override=True)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -26,6 +29,7 @@ BUCKET = os.getenv("DOCUMENT_VAULT_BUCKET", "farm-documents")
 EMBEDDING_MODEL = os.getenv("DOCUMENT_VAULT_EMBEDDING_MODEL", "text-embedding-3-small")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 PROCESSING_VERSION = os.getenv("DOCUMENT_VAULT_PROCESSING_VERSION", "docling-v1")
+EMBEDDING_BATCH_SIZE = max(1, int(os.getenv("DOCUMENT_VAULT_EMBEDDING_BATCH_SIZE", "32")))
 ALLOWED_CATEGORIES = {
     "certificate",
     "soil_analysis",
@@ -84,26 +88,45 @@ def fallback_embedding(text: str, dimensions: int = 1536) -> list[float]:
 
 
 def embed_text(text: str) -> tuple[str, int, list[float], str]:
+    return embed_texts([text])[0]
+
+
+def embed_texts(texts: list[str]) -> list[tuple[str, int, list[float], str]]:
     if not OPENAI_API_KEY:
         model = f"local-hash-{EMBEDDING_MODEL}"
-        return model, 1536, fallback_embedding(text), "local-hash"
+        return [(model, 1536, fallback_embedding(text), "local-hash") for text in texts]
     from openai import OpenAI
 
     client = OpenAI(api_key=OPENAI_API_KEY)
-    result = client.embeddings.create(model=EMBEDDING_MODEL, input=text)
-    embedding = result.data[0].embedding
-    return EMBEDDING_MODEL, len(embedding), embedding, "openai"
+    result = client.embeddings.create(model=EMBEDDING_MODEL, input=texts)
+    ordered = sorted(result.data, key=lambda item: item.index)
+    return [(EMBEDDING_MODEL, len(item.embedding), item.embedding, "openai") for item in ordered]
 
 
-def infer_document_details(text: str, document: dict[str, Any]) -> dict[str, Any]:
+def infer_document_details(
+    text: str,
+    document: dict[str, Any],
+    raw_bytes: bytes | None = None,
+    content_type: str = "",
+) -> dict[str, Any]:
     sample = (text or "")[:8000]
     fallback_title = title_from_filename(document.get("filename") or document.get("title") or "")
+    document_date = first_date_near(sample, ["invoice date", "document date", "date", "issued", "statement date"]) or first_date(sample)
+    expiry_date = first_date_near(sample, ["expiry", "expires", "valid until", "renewal", "due date", "payment due"])
     details = {
         "title": fallback_title,
         "category": "general",
         "tags": [],
         "notes": "",
-        "expiry_date": None,
+        "document_date": document_date,
+        "expiry_date": expiry_date,
+        "due_date": first_date_near(sample, ["due date", "payment due", "pay by", "deadline"]),
+        "issuer": "",
+        "counterparty": "",
+        "invoice_number": invoice_reference(sample),
+        "total_amount": max(money_values(sample), default=None),
+        "vat_amount": None,
+        "currency": "GBP" if re.search(r"\b(£|gbp)\b", sample, re.I) else "",
         "confidence": 0.25,
         "method": "fallback",
     }
@@ -120,22 +143,39 @@ def infer_document_details(text: str, document: dict[str, Any]) -> dict[str, Any
         details["category"] = "notice"
     elif "report" in lowered:
         details["category"] = "report"
-    date_match = re.search(r"\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b", sample)
-    if date_match:
-        yyyy, mm, dd = date_match.groups()
-        details["expiry_date"] = f"{yyyy}-{int(mm):02d}-{int(dd):02d}"
-
     first_lines = [line.strip("# ").strip() for line in sample.splitlines() if len(line.strip()) > 6]
     if first_lines:
         details["title"] = first_lines[0][:120]
 
-    if not OPENAI_API_KEY or not sample.strip():
+    can_use_vision = bool(
+        OPENAI_API_KEY
+        and raw_bytes
+        and str(content_type or "").lower().startswith("image/")
+    )
+    if not OPENAI_API_KEY or (not sample.strip() and not can_use_vision):
         return details
 
     try:
         from openai import OpenAI
 
         client = OpenAI(api_key=OPENAI_API_KEY)
+        if sample.strip():
+            user_content: str | list[dict[str, Any]] = sample
+        else:
+            image_data = base64.b64encode(raw_bytes or b"").decode("ascii")
+            user_content = [
+                {
+                    "type": "text",
+                    "text": (
+                        "Extract metadata from this farm document image or scan. "
+                        f"The uploaded filename is {document.get('filename') or document.get('title') or 'document'}."
+                    ),
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{content_type};base64,{image_data}"},
+                },
+            ]
         response = client.chat.completions.create(
             model=os.getenv("DOCUMENT_VAULT_CHAT_MODEL", "gpt-4o-mini"),
             temperature=0.1,
@@ -144,13 +184,16 @@ def infer_document_details(text: str, document: dict[str, Any]) -> dict[str, Any
                 {
                     "role": "system",
                     "content": (
-                        "Extract concise document metadata as JSON. Use only these categories: "
+                        "Extract concise farm document metadata as strict JSON. Use only these categories: "
                         + ", ".join(sorted(ALLOWED_CATEGORIES))
-                        + ". Return keys: title, category, tags, notes, expiry_date, confidence. "
-                        "expiry_date must be YYYY-MM-DD or null. tags must be an array of short strings."
+                        + ". Return keys: title, category, tags, notes, document_date, expiry_date, due_date, "
+                        "issuer, counterparty, invoice_number, total_amount, vat_amount, currency, confidence. "
+                        "All dates must be YYYY-MM-DD or null. Use expiry_date only for validity/renewal/expiry dates. "
+                        "Use document_date for invoice/issue/report/letter dates. tags must be an array of short strings. "
+                        "notes should be one concise sentence explaining what the document is and any action needed."
                     ),
                 },
-                {"role": "user", "content": sample},
+                {"role": "user", "content": user_content},
             ],
         )
         parsed = json.loads(response.choices[0].message.content or "{}")
@@ -161,7 +204,15 @@ def infer_document_details(text: str, document: dict[str, Any]) -> dict[str, Any
             "category": category,
             "tags": [str(tag).strip()[:40] for tag in tags if str(tag).strip()][:8],
             "notes": str(parsed.get("notes") or details["notes"])[:500],
-            "expiry_date": parsed.get("expiry_date") or details["expiry_date"],
+            "document_date": parse_date_to_iso(str(parsed.get("document_date") or "")) or details["document_date"],
+            "expiry_date": parse_date_to_iso(str(parsed.get("expiry_date") or "")) or details["expiry_date"],
+            "due_date": parse_date_to_iso(str(parsed.get("due_date") or "")) or details["due_date"],
+            "issuer": str(parsed.get("issuer") or details["issuer"])[:160],
+            "counterparty": str(parsed.get("counterparty") or details["counterparty"])[:160],
+            "invoice_number": str(parsed.get("invoice_number") or details["invoice_number"])[:120],
+            "total_amount": parsed.get("total_amount") if isinstance(parsed.get("total_amount"), (int, float)) else details["total_amount"],
+            "vat_amount": parsed.get("vat_amount") if isinstance(parsed.get("vat_amount"), (int, float)) else details["vat_amount"],
+            "currency": str(parsed.get("currency") or details["currency"])[:20],
             "confidence": float(parsed.get("confidence") or 0.75),
             "method": "openai",
         }
@@ -255,12 +306,13 @@ def infer_document_actions(text: str, document: dict[str, Any], details: dict[st
     document_id = document["id"]
     title = details.get("title") or document.get("title") or title_from_filename(document.get("filename") or "")
     category = details.get("category") or document.get("category") or "general"
-    counterparty = likely_counterparty(sample, title)
-    invoice_ref = invoice_reference(sample)
-    due_date = first_date_near(sample, ["due date", "payment due", "pay by", "due"]) or details.get("expiry_date")
-    invoice_date = first_date_near(sample, ["invoice date", "date"]) or first_date(sample)
+    counterparty = details.get("counterparty") or details.get("issuer") or likely_counterparty(sample, title)
+    invoice_ref = details.get("invoice_number") or invoice_reference(sample)
+    due_date = details.get("due_date") or first_date_near(sample, ["due date", "payment due", "pay by", "due"]) or details.get("expiry_date")
+    invoice_date = details.get("document_date") or first_date_near(sample, ["invoice date", "date"]) or first_date(sample)
     amounts = money_values(sample)
-    total_amount = max(amounts) if amounts else None
+    total_amount = details.get("total_amount") if isinstance(details.get("total_amount"), (int, float)) else (max(amounts) if amounts else None)
+    vat_amount = details.get("vat_amount") if isinstance(details.get("vat_amount"), (int, float)) else 0
     suggestions: list[dict[str, Any]] = []
 
     def add(action_type: str, action_title: str, summary: str, payload: dict[str, Any], confidence: float):
@@ -297,7 +349,7 @@ def infer_document_actions(text: str, document: dict[str, Any], details: dict[st
                     "type": "expense",
                     "date": invoice_date or datetime.now(timezone.utc).date().isoformat(),
                     "amount": total_amount,
-                    "vatAmount": 0,
+                    "vatAmount": vat_amount,
                     "category": "other",
                     "description": title,
                     "counterparty": counterparty,
@@ -408,6 +460,169 @@ def parse_with_docling(path: Path) -> dict[str, Any]:
         }
 
 
+def walk_values(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from walk_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk_values(child)
+
+
+def text_from_value(value: Any, max_chars: int = 4000) -> str:
+    parts: list[str] = []
+
+    def visit(item: Any):
+        if len(" ".join(parts)) >= max_chars:
+            return
+        if isinstance(item, str):
+            clean = re.sub(r"\s+", " ", item).strip()
+            if clean:
+                parts.append(clean)
+        elif isinstance(item, dict):
+            for key in ("text", "caption", "label", "name", "content"):
+                if isinstance(item.get(key), str):
+                    visit(item[key])
+            for key in ("cells", "data", "children", "items"):
+                if key in item:
+                    visit(item[key])
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return " ".join(parts)[:max_chars]
+
+
+def first_int(value: Any, keys: tuple[str, ...]) -> int | None:
+    for node in walk_values(value):
+        for key in keys:
+            raw = node.get(key)
+            if isinstance(raw, int):
+                return raw
+            if isinstance(raw, str) and raw.isdigit():
+                return int(raw)
+    return None
+
+
+def bounding_boxes_from_value(value: Any) -> list[dict[str, Any]]:
+    boxes: list[dict[str, Any]] = []
+    for node in walk_values(value):
+        for key in ("bbox", "bounding_box", "prov"):
+            raw = node.get(key)
+            if isinstance(raw, dict):
+                boxes.append(raw)
+            elif isinstance(raw, list):
+                boxes.extend([item for item in raw if isinstance(item, dict)])
+    return boxes[:8]
+
+
+def markdown_tables(markdown: str) -> list[dict[str, Any]]:
+    tables: list[dict[str, Any]] = []
+    lines = (markdown or "").splitlines()
+    idx = 0
+    while idx < len(lines):
+        if "|" not in lines[idx]:
+            idx += 1
+            continue
+        block = []
+        while idx < len(lines) and "|" in lines[idx]:
+            block.append(lines[idx].strip())
+            idx += 1
+        if len(block) >= 2 and re.search(r"\|\s*:?-{2,}:?\s*\|", "\n".join(block)):
+            rows = []
+            for line in block:
+                cells = [cell.strip() for cell in line.strip("|").split("|")]
+                if cells and not all(re.fullmatch(r":?-{2,}:?", cell or "") for cell in cells):
+                    rows.append(cells)
+            tables.append({
+                "markdown": "\n".join(block),
+                "plain_text": "\n".join(" | ".join(row) for row in rows),
+                "rows": rows,
+                "source": "markdown",
+            })
+        idx += 1
+    return tables
+
+
+def docling_collection(docling_json: dict[str, Any], names: tuple[str, ...]) -> list[Any]:
+    items: list[Any] = []
+    for name in names:
+        raw = docling_json.get(name)
+        if isinstance(raw, list):
+            items.extend(raw)
+        elif isinstance(raw, dict):
+            items.extend(raw.values())
+    return items
+
+
+def extract_table_evidence(parsed: dict[str, Any], farm_id: str, document_id: str) -> list[dict[str, Any]]:
+    docling_json = parsed.get("docling_json") or {}
+    evidence: list[dict[str, Any]] = []
+    for table in docling_collection(docling_json, ("tables", "table_items")):
+        plain_text = text_from_value(table)
+        evidence.append({
+            "farm_id": farm_id,
+            "document_id": document_id,
+            "table_index": len(evidence),
+            "page_number": first_int(table, ("page_no", "page_number", "page")),
+            "label": str(table.get("label") or table.get("name") or f"Table {len(evidence) + 1}")[:160] if isinstance(table, dict) else f"Table {len(evidence) + 1}",
+            "caption": str(table.get("caption") or "")[:500] if isinstance(table, dict) else "",
+            "markdown": table.get("markdown") if isinstance(table, dict) and isinstance(table.get("markdown"), str) else None,
+            "plain_text": plain_text,
+            "rows": table.get("data") if isinstance(table, dict) and isinstance(table.get("data"), list) else [],
+            "bounding_boxes": bounding_boxes_from_value(table),
+            "source_metadata": {"source": "docling"},
+        })
+    for table in markdown_tables(parsed.get("markdown") or ""):
+        evidence.append({
+            "farm_id": farm_id,
+            "document_id": document_id,
+            "table_index": len(evidence),
+            "label": f"Markdown table {len(evidence) + 1}",
+            "markdown": table["markdown"],
+            "plain_text": table["plain_text"],
+            "rows": table["rows"],
+            "source_metadata": {"source": "markdown"},
+        })
+    return evidence[:80]
+
+
+def extract_figure_evidence(parsed: dict[str, Any], document: dict[str, Any]) -> list[dict[str, Any]]:
+    docling_json = parsed.get("docling_json") or {}
+    farm_id = document["farm_id"]
+    document_id = document["id"]
+    evidence: list[dict[str, Any]] = []
+    for figure in docling_collection(docling_json, ("pictures", "figures", "images")):
+        caption = str(figure.get("caption") or text_from_value(figure, 800) or "")[:500] if isinstance(figure, dict) else ""
+        evidence.append({
+            "farm_id": farm_id,
+            "document_id": document_id,
+            "figure_index": len(evidence),
+            "page_number": first_int(figure, ("page_no", "page_number", "page")),
+            "label": str(figure.get("label") or figure.get("name") or f"Figure {len(evidence) + 1}")[:160] if isinstance(figure, dict) else f"Figure {len(evidence) + 1}",
+            "caption": caption,
+            "alt_text": caption,
+            "figure_type": "docling_picture",
+            "bounding_boxes": bounding_boxes_from_value(figure),
+            "source_metadata": {"source": "docling"},
+        })
+    if str(document.get("content_type") or "").lower().startswith("image/"):
+        details = (document.get("metadata") or {}).get("extracted_details") or {}
+        evidence.append({
+            "farm_id": farm_id,
+            "document_id": document_id,
+            "figure_index": len(evidence),
+            "label": document.get("title") or document.get("filename") or "Uploaded image",
+            "caption": document.get("notes") or details.get("notes") or "",
+            "alt_text": details.get("notes") or "",
+            "figure_type": "uploaded_image",
+            "source_metadata": {"source": "upload", "content_type": document.get("content_type")},
+        })
+    return evidence[:80]
+
+
 def chunk_text(text: str, target_chars: int = 1800, overlap_chars: int = 180) -> list[dict[str, Any]]:
     text = re.sub(r"\n{3,}", "\n\n", text or "").strip()
     if not text:
@@ -415,22 +630,28 @@ def chunk_text(text: str, target_chars: int = 1800, overlap_chars: int = 180) ->
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks: list[dict[str, Any]] = []
     current = ""
+    current_heading = None
     for paragraph in paragraphs:
+        heading_match = re.match(r"^#{1,6}\s+(.+)$", paragraph)
+        if heading_match:
+            current_heading = heading_match.group(1).strip()[:180]
         candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
         if len(candidate) <= target_chars:
             current = candidate
             continue
         if current:
-            chunks.append({"chunk_text": current})
+            chunks.append({"chunk_text": current, "section_heading": current_heading})
             current = current[-overlap_chars:] + "\n\n" + paragraph
         while len(current) > target_chars:
-            chunks.append({"chunk_text": current[:target_chars]})
+            chunks.append({"chunk_text": current[:target_chars], "section_heading": current_heading})
             current = current[target_chars - overlap_chars :]
     if current:
-        chunks.append({"chunk_text": current})
+        chunks.append({"chunk_text": current, "section_heading": current_heading})
     for idx, chunk in enumerate(chunks):
         chunk["chunk_index"] = idx
         chunk["token_count"] = max(1, len(chunk["chunk_text"]) // 4)
+        if "|" in chunk["chunk_text"] and re.search(r"\|\s*:?-{2,}:?\s*\|", chunk["chunk_text"]):
+            chunk["table_reference"] = "markdown-table"
     return chunks
 
 
@@ -535,6 +756,11 @@ class DocumentWorker:
         self.supabase.table("document_chunk_embeddings").delete().eq("document_id", document_id).execute()
         self.supabase.table("document_extracted_entities").delete().eq("document_id", document_id).execute()
         self.supabase.table("document_suggested_actions").delete().eq("document_id", document_id).eq("status", "pending").execute()
+        try:
+            self.supabase.table("document_tables").delete().eq("document_id", document_id).execute()
+            self.supabase.table("document_figures").delete().eq("document_id", document_id).execute()
+        except Exception:
+            pass
         self.supabase.table("document_chunks").delete().eq("document_id", document_id).execute()
         self.graph.delete_document(farm_id, document_id)
         prefix = f"{farm_id}/documents/{document_id}"
@@ -577,7 +803,12 @@ class DocumentWorker:
             parsed["markdown"].encode("utf-8"),
             {"content-type": "text/markdown", "upsert": "true"},
         )
-        extracted_details = infer_document_details(parsed["text"], document)
+        extracted_details = infer_document_details(
+            parsed["text"],
+            document,
+            raw_bytes=raw,
+            content_type=document.get("content_type") or "",
+        )
         existing_metadata = document.get("metadata") or {}
         should_autofill = existing_metadata.get("auto_populate") is not False and not existing_metadata.get("user_edited_details")
         if should_autofill:
@@ -586,6 +817,14 @@ class DocumentWorker:
                     **existing_metadata,
                     "parse_method": parsed["method"],
                     "extracted_details": extracted_details,
+                    "document_date": extracted_details.get("document_date"),
+                    "due_date": extracted_details.get("due_date"),
+                    "issuer": extracted_details.get("issuer"),
+                    "counterparty": extracted_details.get("counterparty"),
+                    "invoice_number": extracted_details.get("invoice_number"),
+                    "total_amount": extracted_details.get("total_amount"),
+                    "vat_amount": extracted_details.get("vat_amount"),
+                    "currency": extracted_details.get("currency"),
                     "auto_populated_at": utc_now(),
                 }
             }
@@ -620,6 +859,11 @@ class DocumentWorker:
 
         self.supabase.table("document_chunk_embeddings").delete().eq("document_id", document_id).execute()
         self.supabase.table("document_extracted_entities").delete().eq("document_id", document_id).execute()
+        try:
+            self.supabase.table("document_tables").delete().eq("document_id", document_id).execute()
+            self.supabase.table("document_figures").delete().eq("document_id", document_id).execute()
+        except Exception:
+            pass
         self.supabase.table("document_chunks").delete().eq("document_id", document_id).execute()
 
         chunks = chunk_text(parsed["text"])
@@ -631,19 +875,58 @@ class DocumentWorker:
                 "chunk_index": chunk["chunk_index"],
                 "chunk_text": chunk["chunk_text"],
                 "token_count": chunk["token_count"],
+                "section_heading": chunk.get("section_heading"),
+                "table_reference": chunk.get("table_reference"),
                 "source_metadata": {"storage_path": document["storage_path"]},
-                "docling_metadata": {"parse_method": parsed["method"]},
+                "docling_metadata": {
+                    "parse_method": parsed["method"],
+                    "has_table": bool(chunk.get("table_reference")),
+                },
             }
             result = self.supabase.table("document_chunks").insert(row).execute()
             inserted_chunks.append(result.data[0])
+
+        table_rows = extract_table_evidence(parsed, farm_id, document_id)
+        for table in table_rows:
+            for chunk in inserted_chunks:
+                needle = table.get("markdown") or table.get("plain_text") or ""
+                if needle and needle[:80] in (chunk.get("chunk_text") or ""):
+                    table["chunk_id"] = chunk["id"]
+                    break
+        if table_rows:
+            try:
+                self.supabase.table("document_tables").insert(table_rows).execute()
+            except Exception as exc:
+                print(f"Table evidence skipped for {document_id}: {exc}")
+
+        figure_rows = extract_figure_evidence(parsed, document)
+        if figure_rows:
+            try:
+                self.supabase.table("document_figures").insert(figure_rows).execute()
+            except Exception as exc:
+                print(f"Figure evidence skipped for {document_id}: {exc}")
+
         self.set_job_status(job, "chunked")
-        self.set_document_status(document_id, "chunked")
+        self.set_document_status(
+            document_id,
+            "chunked",
+            metadata={
+                **(document.get("metadata") or {}),
+                "parse_method": parsed["method"],
+                "extracted_details": extracted_details,
+                "table_count": len(table_rows),
+                "figure_count": len(figure_rows),
+                "chunk_count": len(inserted_chunks),
+            },
+        )
 
         all_entities = []
-        for chunk in inserted_chunks:
-            model, dimensions, embedding, provider = embed_text(chunk["chunk_text"])
-            self.supabase.table("document_chunk_embeddings").insert(
-                {
+        for start in range(0, len(inserted_chunks), EMBEDDING_BATCH_SIZE):
+            batch = inserted_chunks[start : start + EMBEDDING_BATCH_SIZE]
+            embeddings = embed_texts([chunk["chunk_text"] for chunk in batch])
+            embedding_rows = []
+            for chunk, (model, dimensions, embedding, provider) in zip(batch, embeddings):
+                embedding_rows.append({
                     "farm_id": farm_id,
                     "document_id": document_id,
                     "chunk_id": chunk["id"],
@@ -651,9 +934,10 @@ class DocumentWorker:
                     "embedding_dimensions": dimensions,
                     "embedding": embedding,
                     "metadata": {"provider": provider},
-                }
-            ).execute()
-            all_entities.extend(extract_entities(chunk, farm_id, document_id, chunk["id"]))
+                })
+                all_entities.extend(extract_entities(chunk, farm_id, document_id, chunk["id"]))
+            if embedding_rows:
+                self.supabase.table("document_chunk_embeddings").insert(embedding_rows).execute()
         if all_entities:
             self.supabase.table("document_extracted_entities").insert(all_entities).execute()
         self.set_job_status(job, "embedded")

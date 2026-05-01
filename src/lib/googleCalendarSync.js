@@ -21,7 +21,7 @@ export async function syncTasksToGoogle(farmId, tasks) {
     return body;
   } catch (err) {
     if (/failed to fetch|networkerror|load failed/i.test(err?.message || "")) {
-      throw new Error("Could not reach the Tilth API. Check that npm run tilth-api is running, then try again.");
+      throw new Error("Calendar sync is not reachable right now. Check your connection and try again.");
     }
     throw err;
   }

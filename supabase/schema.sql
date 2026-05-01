@@ -14,6 +14,8 @@ create or replace function public.is_admin()
 returns boolean
 language sql
 stable
+security definer
+set search_path = public
 as $$
   select exists (
     select 1
@@ -23,10 +25,42 @@ as $$
   );
 $$;
 
+create or replace function public.is_farm_member(target_farm_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.farm_members fm
+    where fm.farm_id = target_farm_id
+      and fm.user_id = auth.uid()
+  );
+$$;
+
+create or replace function public.can_manage_farm_members(target_farm_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.farms f
+    where f.id = target_farm_id
+      and f.owner_user_id = auth.uid()
+  );
+$$;
+
 create or replace function public.can_read_farm(target_farm_id uuid)
 returns boolean
 language sql
 stable
+security definer
+set search_path = public
 as $$
   select public.is_admin()
     or exists (
@@ -34,17 +68,15 @@ as $$
       where f.id = target_farm_id
         and f.owner_user_id = auth.uid()
     )
-    or exists (
-      select 1 from public.farm_members fm
-      where fm.farm_id = target_farm_id
-        and fm.user_id = auth.uid()
-    );
+    or public.is_farm_member(target_farm_id);
 $$;
 
 create or replace function public.can_edit_farm(target_farm_id uuid)
 returns boolean
 language sql
 stable
+security definer
+set search_path = public
 as $$
   select exists (
       select 1 from public.farms f
@@ -205,7 +237,11 @@ create policy "farms select own/admin"
 on public.farms
 for select
 to authenticated
-using (owner_user_id = auth.uid() or public.is_admin());
+using (
+  owner_user_id = auth.uid()
+  or public.is_admin()
+  or public.is_farm_member(id)
+);
 
 drop policy if exists "farms insert own" on public.farms;
 create policy "farms insert own"
@@ -247,64 +283,29 @@ create policy "tilth_fields select farm owner/admin"
 on public.tilth_fields
 for select
 to authenticated
-using (
-  exists (
-    select 1
-    from public.farms f
-    where f.id = farm_id
-      and (f.owner_user_id = auth.uid() or public.is_admin())
-  )
-);
+using (public.can_read_farm(farm_id));
 
 drop policy if exists "tilth_fields insert farm owner" on public.tilth_fields;
 create policy "tilth_fields insert farm owner"
 on public.tilth_fields
 for insert
 to authenticated
-with check (
-  exists (
-    select 1
-    from public.farms f
-    where f.id = farm_id
-      and f.owner_user_id = auth.uid()
-  )
-);
+with check (public.can_edit_farm(farm_id));
 
 drop policy if exists "tilth_fields update farm owner" on public.tilth_fields;
 create policy "tilth_fields update farm owner"
 on public.tilth_fields
 for update
 to authenticated
-using (
-  exists (
-    select 1
-    from public.farms f
-    where f.id = farm_id
-      and f.owner_user_id = auth.uid()
-  )
-)
-with check (
-  exists (
-    select 1
-    from public.farms f
-    where f.id = farm_id
-      and f.owner_user_id = auth.uid()
-  )
-);
+using (public.can_edit_farm(farm_id))
+with check (public.can_edit_farm(farm_id));
 
 drop policy if exists "tilth_fields delete farm owner" on public.tilth_fields;
 create policy "tilth_fields delete farm owner"
 on public.tilth_fields
 for delete
 to authenticated
-using (
-  exists (
-    select 1
-    from public.farms f
-    where f.id = farm_id
-      and f.owner_user_id = auth.uid()
-  )
-);
+using (public.can_edit_farm(farm_id));
 
 -- 3a3) Tilth — per-field × per-layer extracted data
 -- Each row is the pre-extracted vector representation of one map layer's data
@@ -689,6 +690,9 @@ using (
 alter table public.tilth_field_ndvi add column if not exists evi_mean real null;
 alter table public.tilth_field_ndvi add column if not exists ndwi_mean real null;
 alter table public.tilth_field_ndvi add column if not exists ndmi_mean real null;
+alter table public.tilth_field_ndvi add column if not exists ndre_mean real null;
+alter table public.tilth_field_ndvi add column if not exists savi_mean real null;
+alter table public.tilth_field_ndvi add column if not exists nbr_mean real null;
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- Per-field elevation from Copernicus DEM 30m (via MPC)
@@ -777,44 +781,28 @@ create policy "farm_members select own farm"
 on public.farm_members for select to authenticated
 using (
   user_id = auth.uid()
-  or exists (
-    select 1 from public.farms f
-    where f.id = farm_members.farm_id
-      and f.owner_user_id = auth.uid()
-  )
+  or public.can_manage_farm_members(farm_id)
 );
 
 drop policy if exists "farm_members insert owner" on public.farm_members;
 create policy "farm_members insert owner"
 on public.farm_members for insert to authenticated
 with check (
-  exists (
-    select 1 from public.farms f
-    where f.id = farm_members.farm_id
-      and f.owner_user_id = auth.uid()
-  )
+  public.can_manage_farm_members(farm_id)
 );
 
 drop policy if exists "farm_members update owner" on public.farm_members;
 create policy "farm_members update owner"
 on public.farm_members for update to authenticated
 using (
-  exists (
-    select 1 from public.farms f
-    where f.id = farm_members.farm_id
-      and f.owner_user_id = auth.uid()
-  )
+  public.can_manage_farm_members(farm_id)
 );
 
 drop policy if exists "farm_members delete owner" on public.farm_members;
 create policy "farm_members delete owner"
 on public.farm_members for delete to authenticated
 using (
-  exists (
-    select 1 from public.farms f
-    where f.id = farm_members.farm_id
-      and f.owner_user_id = auth.uid()
-  )
+  public.can_manage_farm_members(farm_id)
 );
 
 -- Pending invitations (email-based, for users not yet signed up)
@@ -1581,6 +1569,79 @@ create policy "document_chunks delete farm editor"
 on public.document_chunks for delete to authenticated
 using (public.can_edit_farm(farm_id));
 
+create table if not exists public.document_tables (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  farm_id uuid not null references public.farms(id) on delete cascade,
+  document_id uuid not null references public.farm_documents(id) on delete cascade,
+  chunk_id uuid null references public.document_chunks(id) on delete set null,
+  table_index integer not null,
+  page_number integer null,
+  label text null,
+  caption text null,
+  markdown text null,
+  plain_text text null,
+  rows jsonb not null default '[]'::jsonb,
+  bounding_boxes jsonb not null default '[]'::jsonb,
+  source_metadata jsonb not null default '{}'::jsonb,
+  unique (farm_id, document_id, table_index)
+);
+
+create index if not exists document_tables_farm_document_idx
+on public.document_tables(farm_id, document_id, table_index);
+
+create index if not exists document_tables_text_idx
+on public.document_tables using gin(to_tsvector('english', coalesce(plain_text, '') || ' ' || coalesce(markdown, '')));
+
+alter table public.document_tables enable row level security;
+
+drop policy if exists "document_tables select farm reader" on public.document_tables;
+create policy "document_tables select farm reader"
+on public.document_tables for select to authenticated
+using (public.can_read_farm(farm_id));
+
+drop policy if exists "document_tables write farm editor" on public.document_tables;
+create policy "document_tables write farm editor"
+on public.document_tables for all to authenticated
+using (public.can_edit_farm(farm_id))
+with check (public.can_edit_farm(farm_id));
+
+create table if not exists public.document_figures (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  farm_id uuid not null references public.farms(id) on delete cascade,
+  document_id uuid not null references public.farm_documents(id) on delete cascade,
+  chunk_id uuid null references public.document_chunks(id) on delete set null,
+  figure_index integer not null,
+  page_number integer null,
+  label text null,
+  caption text null,
+  alt_text text null,
+  figure_type text null,
+  bounding_boxes jsonb not null default '[]'::jsonb,
+  source_metadata jsonb not null default '{}'::jsonb,
+  unique (farm_id, document_id, figure_index)
+);
+
+create index if not exists document_figures_farm_document_idx
+on public.document_figures(farm_id, document_id, figure_index);
+
+create index if not exists document_figures_text_idx
+on public.document_figures using gin(to_tsvector('english', coalesce(caption, '') || ' ' || coalesce(alt_text, '') || ' ' || coalesce(label, '')));
+
+alter table public.document_figures enable row level security;
+
+drop policy if exists "document_figures select farm reader" on public.document_figures;
+create policy "document_figures select farm reader"
+on public.document_figures for select to authenticated
+using (public.can_read_farm(farm_id));
+
+drop policy if exists "document_figures write farm editor" on public.document_figures;
+create policy "document_figures write farm editor"
+on public.document_figures for all to authenticated
+using (public.can_edit_farm(farm_id))
+with check (public.can_edit_farm(farm_id));
+
 create table if not exists public.document_chunk_embeddings (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz not null default now(),
@@ -1769,6 +1830,7 @@ create table if not exists public.assistant_suggested_actions (
     'finance_transaction',
     'inventory_item',
     'inventory_adjustment',
+    'field_observation',
     'spray_record',
     'contact',
     'compliance_checklist',

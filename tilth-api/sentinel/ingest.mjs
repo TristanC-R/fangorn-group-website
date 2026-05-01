@@ -267,7 +267,14 @@ async function runJob(job) {
       });
       const stats = multi?.ndvi ?? null;
       const extraIndices = multi
-        ? { evi_mean: multi.evi?.mean ?? null, ndwi_mean: multi.ndwi?.mean ?? null, ndmi_mean: multi.ndmi?.mean ?? null }
+        ? {
+            evi_mean: multi.evi?.mean ?? null,
+            ndwi_mean: multi.ndwi?.mean ?? null,
+            ndmi_mean: multi.ndmi?.mean ?? null,
+            ndre_mean: multi.ndre?.mean ?? null,
+            savi_mean: multi.savi?.mean ?? null,
+            nbr_mean: multi.nbr?.mean ?? null,
+          }
         : null;
       if (!stats || !Number.isFinite(stats.mean) || (stats.valid_count ?? 0) === 0) {
         await upsertSceneResult({

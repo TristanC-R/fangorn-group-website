@@ -2,9 +2,8 @@ import { Component, useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import treeLogo from "../../Fangorn Assets/Grey logo tree only.png";
 import { supabase, supabaseConfigured } from "../lib/supabaseClient";
-import { FieldsSetup } from "./FieldsSetup";
+import { fetchTilthApi, getTilthApiBase } from "../lib/tilthApi.js";
 import { AppShell } from "./ui/AppShell.jsx";
-import { GlobalAssistant } from "./ui/GlobalAssistant.jsx";
 import { brand, fonts, inputStyle, SECTION_IDS } from "./ui/theme.js";
 import {
   Body,
@@ -15,16 +14,34 @@ import {
   Kicker,
 } from "./ui/primitives.jsx";
 import { WorkspaceHome } from "./workspace/WorkspaceHome.jsx";
+import { hydrateFarmStore } from "./state/localStore.js";
+import { getAuthRedirect } from "../lib/authRedirect.js";
+import { FieldsSetup } from "./FieldsSetup.jsx";
+import { GlobalAssistant } from "./ui/GlobalAssistant.jsx";
+import { FieldMode } from "./ui/FieldMode.jsx";
 import { FieldsWorkspace } from "./workspace/FieldsWorkspace.jsx";
 import { RecordsWorkspace } from "./workspace/RecordsWorkspace.jsx";
 import { SubmissionsWorkspace } from "./workspace/SubmissionsWorkspace.jsx";
 import { YieldWorkspace } from "./workspace/YieldWorkspace.jsx";
+import { RotationWorkspace } from "./workspace/RotationWorkspace.jsx";
+import { ObservationsWorkspace } from "./workspace/ObservationsWorkspace.jsx";
 import { RemoteSensingWorkspace } from "./workspace/RemoteSensingWorkspace.jsx";
 import { SoilWorkspace } from "./workspace/SoilWorkspace.jsx";
+import { WeatherWorkspace } from "./workspace/WeatherWorkspace.jsx";
 import { InsightsWorkspace } from "./workspace/InsightsWorkspace.jsx";
+import { CompareView } from "./workspace/CompareView.jsx";
 import { ReportsWorkspace } from "./workspace/ReportsWorkspace.jsx";
-import { hydrateFarmStore } from "./state/localStore.js";
-import { getAuthRedirect } from "../lib/authRedirect.js";
+import { ComplianceWorkspace } from "./workspace/ComplianceWorkspace.jsx";
+import { CostsWorkspace } from "./workspace/CostsWorkspace.jsx";
+import { TeamWorkspace } from "./workspace/TeamWorkspace.jsx";
+import { LivestockWorkspace } from "./workspace/LivestockWorkspace.jsx";
+import { CalendarWorkspace } from "./workspace/CalendarWorkspace.jsx";
+import { InventoryWorkspace } from "./workspace/InventoryWorkspace.jsx";
+import { FinanceWorkspace } from "./workspace/FinanceWorkspace.jsx";
+import { DocumentsWorkspace } from "./workspace/DocumentsWorkspace.jsx";
+import { ContactsWorkspace } from "./workspace/ContactsWorkspace.jsx";
+import { MarketWorkspace } from "./workspace/MarketWorkspace.jsx";
+import { AuditWorkspace } from "./workspace/AuditWorkspace.jsx";
 
 function useSupabaseUser() {
   const [user, setUser] = useState(null);
@@ -45,7 +62,7 @@ function useSupabaseUser() {
     (async () => {
       try {
         const { data } = await supabase.auth.getUser();
-        setUser(data?.user || null);
+        setUser((prev) => (prev?.id === data?.user?.id ? prev : data?.user || null));
       } catch {
         setUser(null);
       } finally {
@@ -57,7 +74,7 @@ function useSupabaseUser() {
       }
     })();
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user || null);
+      setUser((prev) => (prev?.id === session?.user?.id ? prev : session?.user || null));
       if (!done) {
         done = true;
         window.clearTimeout(watchdog);
@@ -83,6 +100,7 @@ function LoggedOutShell({ children }) {
         color: brand.body,
         display: "flex",
         flexDirection: "column",
+        overflowX: "hidden",
       }}
     >
       <style>{`
@@ -107,11 +125,13 @@ function LoggedOutShell({ children }) {
             alignItems: "center",
             justifyContent: "space-between",
             gap: 16,
+            minWidth: 0,
           }}
+          className="tilth-loggedout-header"
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div className="tilth-loggedout-brand" style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
             <img src={treeLogo} alt="Fangorn" style={{ height: 34, width: "auto" }} />
-            <div>
+            <div style={{ minWidth: 0 }}>
               <div
                 style={{
                   fontFamily: fonts.mono,
@@ -123,7 +143,7 @@ function LoggedOutShell({ children }) {
               >
                 Tilth · Beta
               </div>
-              <div style={{ fontFamily: fonts.serif, fontSize: 20, color: brand.forest }}>
+              <div className="tilth-loggedout-title" style={{ fontFamily: fonts.serif, fontSize: 20, color: brand.forest }}>
                 Farm management platform
               </div>
             </div>
@@ -148,6 +168,14 @@ function LoggedOutShell({ children }) {
         </div>
       </header>
       <div style={{ flex: 1 }}>{children}</div>
+      <style>{`
+        @media (max-width: 520px) {
+          .tilth-loggedout-header { padding: 12px 16px !important; gap: 10px !important; }
+          .tilth-loggedout-brand { gap: 9px !important; }
+          .tilth-loggedout-brand img { height: 30px !important; }
+          .tilth-loggedout-title { font-size: 17px !important; line-height: 1.1 !important; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -155,11 +183,11 @@ function LoggedOutShell({ children }) {
 function LoggedOut({ onGoogle, onEmail }) {
   return (
     <LoggedOutShell>
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "64px 20px 80px" }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "64px 20px 80px", width: "100%", boxSizing: "border-box" }}>
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "minmax(0, 1.15fr) minmax(0, 0.85fr)",
+            gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 360px), 1fr))",
             gap: 24,
             alignItems: "start",
           }}
@@ -168,25 +196,24 @@ function LoggedOut({ onGoogle, onEmail }) {
           <Card tone="section" padding={28} elevated>
             <Kicker style={{ marginBottom: 12 }}>Beta access</Kicker>
             <Headline size="xl" style={{ marginBottom: 14 }}>
-              Tilth helps you plan, track, and optimise your farm.
+              Keep the day-to-day farm work in one calm place.
             </Headline>
             <Body style={{ marginBottom: 22, maxWidth: 640 }}>
-              Sign in to access the workspace — field boundaries, input and spray records,
-              RPA/DEFRA submission readiness, yield maps, satellite time-series and LiDAR
-              derivatives, all tied to the same field registry.
+              Map fields, plan jobs, keep spray and stock records, store documents, check
+              weather, and prepare reports from the same farm workspace.
             </Body>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
               <Button variant="primary" size="lg" onClick={onGoogle}>
                 Continue with Google
               </Button>
               <Button variant="secondary" size="lg" onClick={onEmail}>
-                Sign in with email
+                Request access
               </Button>
             </div>
           </Card>
 
           <Card padding={22}>
-            <Kicker style={{ marginBottom: 12 }}>POC feature stack</Kicker>
+            <Kicker style={{ marginBottom: 12 }}>What Tilth helps with</Kicker>
             <ul
               style={{
                 listStyle: "none",
@@ -201,11 +228,11 @@ function LoggedOut({ onGoogle, onEmail }) {
               }}
             >
               {[
-                ["Layer 1", "Boundaries + interactive map + registry + history"],
-                ["Layer 2", "Input / spray records with NMax & UKFS validation"],
-                ["Layer 3", "RPA / DEFRA submission mapping and exports"],
-                ["Layer 4", "Yield maps — clean, visualise, compare years"],
-                ["Analytical", "Sentinel-2 NDVI, EA LiDAR, cross-field analytics, PDF reports"],
+                ["Fields", "Keep boundaries, cropping, notes, and history together."],
+                ["Jobs and records", "Plan work, log sprays and inputs, and keep audit evidence tidy."],
+                ["Documents", "Store invoices, certificates, maps, soil tests, and reports."],
+                ["Decisions", "Use weather, field observations, yield, and market notes in one place."],
+                ["Reports", "Prepare farm summaries when you need to share or review progress."],
               ].map(([t, d]) => (
                 <li
                   key={t}
@@ -227,6 +254,11 @@ function LoggedOut({ onGoogle, onEmail }) {
         <style>{`
           @media (max-width: 900px) {
             .tilth-loggedout-grid { grid-template-columns: 1fr !important; }
+          }
+          @media (max-width: 520px) {
+            .tilth-loggedout-grid { gap: 14px !important; }
+            .tilth-loggedout-grid h1 { font-size: clamp(38px, 14vw, 56px) !important; line-height: 1.05 !important; }
+            .tilth-loggedout-grid button { width: 100%; justify-content: center; }
           }
         `}</style>
       </div>
@@ -434,10 +466,10 @@ function LoadingPanel({ children }) {
 function friendlyErrorMessage(err, fallback = "Something went wrong.") {
   const raw = typeof err === "string" ? err : err?.message;
   if (isDynamicImportFetchError(err)) {
-    return "The browser could not load this workspace bundle from Vite. Refresh the page or retry the workspace.";
+    return "This part of Tilth did not load cleanly. Refresh the page and try again.";
   }
   if (/failed to fetch|networkerror|load failed/i.test(raw || "")) {
-    return "A network request failed. Check the Tilth API/Supabase connection, then retry.";
+    return "Tilth could not reach the service it needs. Check your connection and try again.";
   }
   return raw || fallback;
 }
@@ -478,51 +510,77 @@ class WorkspaceErrorBoundary extends Component {
   }
 }
 
-const retryableImport = (staticLoader, path, version) => {
-  if (!version || !import.meta.env.DEV) return staticLoader();
-  return import(/* @vite-ignore */ `${path}?tilth_retry=${version}`);
-};
-
-const lazyWorkspaceLoaders = {
-  rotation: (version) => retryableImport(() => import("./workspace/RotationWorkspace.jsx"), "./workspace/RotationWorkspace.jsx", version),
-  compare: (version) => retryableImport(() => import("./workspace/CompareView.jsx"), "./workspace/CompareView.jsx", version),
-  observations: (version) => retryableImport(() => import("./workspace/ObservationsWorkspace.jsx"), "./workspace/ObservationsWorkspace.jsx", version),
-  weather: (version) => retryableImport(() => import("./workspace/WeatherWorkspace.jsx"), "./workspace/WeatherWorkspace.jsx", version),
-  compliance: (version) => retryableImport(() => import("./workspace/ComplianceWorkspace.jsx"), "./workspace/ComplianceWorkspace.jsx", version),
-  costs: (version) => retryableImport(() => import("./workspace/CostsWorkspace.jsx"), "./workspace/CostsWorkspace.jsx", version),
-  team: (version) => retryableImport(() => import("./workspace/TeamWorkspace.jsx"), "./workspace/TeamWorkspace.jsx", version),
-  fieldMode: (version) => retryableImport(() => import("./ui/FieldMode.jsx"), "./ui/FieldMode.jsx", version),
-  livestock: (version) => retryableImport(() => import("./workspace/LivestockWorkspace.jsx"), "./workspace/LivestockWorkspace.jsx", version),
-  calendar: (version) => retryableImport(() => import("./workspace/CalendarWorkspace.jsx"), "./workspace/CalendarWorkspace.jsx", version),
-  inventory: (version) => retryableImport(() => import("./workspace/InventoryWorkspace.jsx"), "./workspace/InventoryWorkspace.jsx", version),
-  finance: (version) => retryableImport(() => import("./workspace/FinanceWorkspace.jsx"), "./workspace/FinanceWorkspace.jsx", version),
-  documents: (version) => retryableImport(() => import("./workspace/DocumentsWorkspace.jsx"), "./workspace/DocumentsWorkspace.jsx", version),
-  contacts: (version) => retryableImport(() => import("./workspace/ContactsWorkspace.jsx"), "./workspace/ContactsWorkspace.jsx", version),
-  market: (version) => retryableImport(() => import("./workspace/MarketWorkspace.jsx"), "./workspace/MarketWorkspace.jsx", version),
-  audit: (version) => retryableImport(() => import("./workspace/AuditWorkspace.jsx"), "./workspace/AuditWorkspace.jsx", version),
-};
-
-const lazyWorkspaceLabels = {
-  rotation: "Rotation planner",
-  compare: "Comparison view",
-  observations: "Observations",
-  weather: "Weather",
-  compliance: "Compliance",
-  costs: "Cost analysis",
-  team: "Team",
-  fieldMode: "Field mode",
-  livestock: "Livestock",
-  calendar: "Calendar",
-  inventory: "Inventory",
-  finance: "Finance",
-  documents: "Documents",
-  contacts: "Contacts",
-  market: "Market",
-  audit: "Audit prep",
-};
-
 function normalizeSection(section) {
   return SECTION_IDS.includes(section) ? section : "home";
+}
+
+async function loadAccessibleFarm(userId) {
+  let clientError = null;
+  const { data: owned, error: ownedError } = await supabase
+    .from("farms")
+    .select("*")
+    .eq("owner_user_id", userId)
+    .order("created_at", { ascending: true })
+    .limit(1);
+  if (owned?.[0]) return owned[0];
+  if (ownedError) clientError = ownedError;
+
+  const { data: memberships, error: memberError } = await supabase
+    .from("farm_members")
+    .select("role, farms(*)")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: true })
+    .limit(1);
+  if (memberships?.[0]?.farms) return memberships[0].farms;
+  if (memberError) clientError = clientError || memberError;
+
+  const apiBase = getTilthApiBase();
+  if (!apiBase) {
+    if (clientError) throw new Error(clientError.message);
+    return null;
+  }
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  if (!token) {
+    if (clientError) throw new Error(clientError.message);
+    return null;
+  }
+  const response = await fetch(`${apiBase}/api/farms/current`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    if (clientError) throw new Error(clientError.message);
+    throw new Error("Could not confirm your farm access.");
+  }
+  const payload = await response.json().catch(() => ({}));
+  return payload?.farm || null;
+}
+
+async function getAuthHeaders() {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function loadFarmFields(farmId) {
+  const headers = await getAuthHeaders();
+  if (headers.Authorization) {
+    const response = await fetchTilthApi(`/api/farms/${encodeURIComponent(farmId)}/fields`, {
+      headers,
+    });
+    if (response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      return payload?.fields || [];
+    }
+  }
+
+  const { data, error: fe } = await supabase
+    .from("tilth_fields")
+    .select("*")
+    .eq("farm_id", farmId)
+    .order("created_at", { ascending: true });
+  if (fe) throw new Error(fe.message);
+  return data || [];
 }
 
 export default function TilthApp() {
@@ -578,107 +636,13 @@ export default function TilthApp() {
     setError(null);
   }, [activeSection]);
 
-  // Lazy-loaded workspaces — loaded only when the user navigates to them
-  const [lazyModules, setLazyModules] = useState({});
-  const [lazyErrors, setLazyErrors] = useState({});
-  const [lazyLoading, setLazyLoading] = useState({});
-  const [lazyVersions, setLazyVersions] = useState({});
-  const loadModule = useCallback((key, options = {}) => {
-    const loader = lazyWorkspaceLoaders[key];
-    if (
-      !loader ||
-      (!options.force && lazyModules[key]) ||
-      lazyLoading[key]
-    ) return;
-
-    const version = options.force ? Date.now() : lazyVersions[key] || 0;
-
-    setLazyLoading((currentLoading) => ({ ...currentLoading, [key]: true }));
-    setLazyErrors((currentErrors) => ({ ...currentErrors, [key]: null }));
-    loader(version)
-      .then((module) => {
-        setLazyModules((currentModules) => ({ ...currentModules, [key]: module }));
-        setLazyErrors((currentErrors) => ({ ...currentErrors, [key]: null }));
-      })
-      .catch((err) => {
-        console.error(`Failed to load Tilth workspace "${key}"`, err);
-        if (import.meta.env.DEV && isDynamicImportFetchError(err) && !options.force) {
-          const retryVersion = Date.now();
-          window.setTimeout(() => {
-            setLazyVersions((currentVersions) => ({ ...currentVersions, [key]: retryVersion }));
-            loader(retryVersion)
-              .then((module) => {
-                setLazyModules((currentModules) => ({ ...currentModules, [key]: module }));
-                setLazyErrors((currentErrors) => ({ ...currentErrors, [key]: null }));
-              })
-              .catch((retryErr) => {
-                console.error(`Retry failed for Tilth workspace "${key}"`, retryErr);
-                setLazyErrors((currentErrors) => ({
-                  ...currentErrors,
-                  [key]: friendlyErrorMessage(retryErr, "Could not load this workspace."),
-                }));
-              })
-              .finally(() => {
-                setLazyLoading((currentLoading) => ({ ...currentLoading, [key]: false }));
-              });
-          }, 350);
-          return;
-        }
-        setLazyErrors((currentErrors) => ({
-          ...currentErrors,
-          [key]: friendlyErrorMessage(err, "Could not load this workspace."),
-        }));
-      })
-      .finally(() => {
-        setLazyLoading((currentLoading) => ({ ...currentLoading, [key]: false }));
-      });
-  }, [lazyLoading, lazyModules, lazyVersions]);
-
-  const retryModule = useCallback((key) => {
-    const version = Date.now();
-    setLazyVersions((currentVersions) => ({ ...currentVersions, [key]: version }));
-    setLazyErrors((currentErrors) => ({ ...currentErrors, [key]: null }));
-    loadModule(key, { force: true });
-  }, [loadModule]);
-
-  useEffect(() => {
-    if (lazyWorkspaceLoaders[activeSection] && !lazyErrors[activeSection]) loadModule(activeSection);
-  }, [activeSection, lazyErrors, loadModule]);
-
-  useEffect(() => {
-    if (fieldMode) loadModule("fieldMode");
-  }, [fieldMode, loadModule]);
-
-  const renderLazyWorkspace = (key, exportName, fallbackText, render) => {
-    const Component = lazyModules[key]?.[exportName];
-    if (Component) return render(Component);
-    if (lazyErrors[key]) {
-      const label = lazyWorkspaceLabels[key] || fallbackText.replace(/\u2026$/, "");
-      return (
-        <LoadingPanel>
-          <div style={{ display: "grid", gap: 12, maxWidth: 640 }}>
-            <div>
-              Could not load {label}: {lazyErrors[key]}
-            </div>
-            <Button variant="secondary" size="sm" onClick={() => retryModule(key)}>
-              Retry {label}
-            </Button>
-          </div>
-        </LoadingPanel>
-      );
-    }
-    return <LoadingPanel>{lazyLoading[key] ? fallbackText : `${fallbackText.replace(/\u2026$/, "")}…`}</LoadingPanel>;
-  };
-
   const refreshFields = useCallback(async () => {
     if (!supabase || !farm?.id) return;
-    const { data, error: fe } = await supabase
-      .from("tilth_fields")
-      .select("*")
-      .eq("farm_id", farm.id)
-      .order("created_at", { ascending: true });
-    if (fe) reportGlobalError(fe, "Could not refresh fields.");
-    else setFields(data || []);
+    try {
+      setFields(await loadFarmFields(farm.id));
+    } catch (err) {
+      reportGlobalError(err, "Could not refresh fields.");
+    }
   }, [farm?.id, reportGlobalError]);
 
   const skipFieldMapping = () => {
@@ -691,6 +655,18 @@ export default function TilthApp() {
     }
     setFieldsOnboardingSkipped(true);
     setFieldsOnboardingDone(true);
+  };
+
+  const resumeFieldMapping = () => {
+    if (farm?.id) {
+      try {
+        sessionStorage.removeItem(`tilth_skip_field_mapping_${farm.id}`);
+      } catch {
+        /* private mode */
+      }
+    }
+    setFieldsOnboardingSkipped(false);
+    setFieldsOnboardingDone(false);
   };
 
   const doneFieldMapping = () => {
@@ -731,15 +707,8 @@ export default function TilthApp() {
         setFarmLoading(true);
         setError(null);
         setFarmFormError(null);
-        const { data, error: e } = await supabase
-          .from("farms")
-          .select("*")
-          .eq("owner_user_id", user.id)
-          .order("created_at", { ascending: true })
-          .limit(1)
-          .maybeSingle();
+        const data = await loadAccessibleFarm(user.id);
         if (cancelled) return;
-        if (e) throw new Error(e.message);
         setFarm(data || null);
       } catch (err) {
         if (!cancelled) reportGlobalError(err, "Could not load farm.");
@@ -776,14 +745,9 @@ export default function TilthApp() {
     (async () => {
       try {
         setFieldsLoading(true);
-        const { data, error: fe } = await supabase
-          .from("tilth_fields")
-          .select("*")
-          .eq("farm_id", farm.id)
-          .order("created_at", { ascending: true });
+        const data = await loadFarmFields(farm.id);
         if (cancelled) return;
-        if (fe) throw new Error(fe.message);
-        setFields(data || []);
+        setFields(data);
       } catch (err) {
         if (!cancelled) reportGlobalError(err, "Could not load fields.");
       } finally {
@@ -801,8 +765,8 @@ export default function TilthApp() {
         <div style={{ maxWidth: 900, margin: "0 auto", padding: "70px 20px" }}>
           <Headline style={{ marginBottom: 12 }}>Tilth</Headline>
           <Body>
-            Supabase isn’t configured yet. Set <code>VITE_SUPABASE_URL</code> and{" "}
-            <code>VITE_SUPABASE_ANON_KEY</code>.
+            Tilth is not ready to sign farmers in on this environment yet. Please contact
+            Fangorn if you need access.
           </Body>
         </div>
       </LoggedOutShell>
@@ -830,6 +794,20 @@ export default function TilthApp() {
   }
 
   if (!farm) {
+    if (error) {
+      return (
+        <LoggedOutShell>
+          <LoadingPanel>
+            <div style={{ display: "grid", gap: 12, maxWidth: 640 }}>
+              <div>{error}</div>
+              <Button variant="secondary" size="sm" onClick={() => window.location.reload()}>
+                Retry
+              </Button>
+            </div>
+          </LoadingPanel>
+        </LoggedOutShell>
+      );
+    }
     return (
       <LoggedOutShell>
         <FarmSetup
@@ -842,7 +820,7 @@ export default function TilthApp() {
     );
   }
 
-  if (fieldsLoading) {
+  if (fieldsLoading && !fields.length) {
     return (
       <LoggedOutShell>
         <LoadingPanel>Loading fields…</LoadingPanel>
@@ -868,59 +846,56 @@ export default function TilthApp() {
   }
 
   if (fieldMode) {
-    const FM = lazyModules.fieldMode?.FieldMode;
-    if (FM) {
-      return (
-        <FM
-          farm={farm}
-          fields={fields}
-          user={user}
-          onExit={() => setFieldMode(false)}
-          onNavigate={(s) => { setFieldMode(false); selectSection(s); }}
-        />
-      );
-    }
+    return (
+      <FieldMode
+        farm={farm}
+        fields={fields}
+        user={user}
+        onExit={() => setFieldMode(false)}
+        onNavigate={(s) => { setFieldMode(false); selectSection(s); }}
+      />
+    );
   }
 
   let view;
   switch (activeSection) {
-    case "fields":
+    case "fields": {
       view = <FieldsWorkspace farm={farm} fields={fields} onFieldsUpdated={refreshFields} />;
       break;
-    case "records":
-      view = <RecordsWorkspace farm={farm} fields={fields} />;
+    }
+    case "records": {
+      view = <RecordsWorkspace farm={farm} fields={fields} onNavigate={selectSection} />;
       break;
-    case "submissions":
+    }
+    case "submissions": {
       view = <SubmissionsWorkspace farm={farm} fields={fields} />;
       break;
-    case "yield":
+    }
+    case "yield": {
       view = <YieldWorkspace farm={farm} fields={fields} />;
       break;
+    }
     case "rotation": {
-      view = renderLazyWorkspace("rotation", "RotationWorkspace", "Loading rotation planner…", (R) => (
-        <R farm={farm} fields={fields} />
-      ));
+      view = <RotationWorkspace farm={farm} fields={fields} />;
       break;
     }
     case "observations": {
-      view = renderLazyWorkspace("observations", "ObservationsWorkspace", "Loading observations…", (O) => (
-        <O farm={farm} fields={fields} />
-      ));
+      view = <ObservationsWorkspace farm={farm} fields={fields} />;
       break;
     }
-    case "sensing":
+    case "sensing": {
       view = <RemoteSensingWorkspace farm={farm} fields={fields} />;
       break;
-    case "soil":
+    }
+    case "soil": {
       view = <SoilWorkspace farm={farm} fields={fields} />;
       break;
+    }
     case "weather": {
-      view = renderLazyWorkspace("weather", "WeatherWorkspace", "Loading weather…", (W) => (
-        <W farm={farm} fields={fields} />
-      ));
+      view = <WeatherWorkspace farm={farm} fields={fields} />;
       break;
     }
-    case "insights":
+    case "insights": {
       view = (
         <InsightsWorkspace
           farm={farm}
@@ -929,79 +904,57 @@ export default function TilthApp() {
         />
       );
       break;
+    }
     case "compare": {
-      view = renderLazyWorkspace("compare", "CompareView", "Loading comparison view…", (C) => (
-        <C fields={fields} farmId={farm?.id} />
-      ));
+      view = <CompareView fields={fields} farmId={farm?.id} />;
       break;
     }
-    case "reports":
+    case "reports": {
       view = <ReportsWorkspace farm={farm} fields={fields} />;
       break;
+    }
     case "compliance": {
-      view = renderLazyWorkspace("compliance", "ComplianceWorkspace", "Loading compliance…", (CP) => (
-        <CP farm={farm} fields={fields} />
-      ));
+      view = <ComplianceWorkspace farm={farm} fields={fields} />;
       break;
     }
     case "costs": {
-      view = renderLazyWorkspace("costs", "CostsWorkspace", "Loading cost analysis…", (CO) => (
-        <CO farm={farm} fields={fields} />
-      ));
+      view = <CostsWorkspace farm={farm} fields={fields} />;
       break;
     }
     case "team": {
-      view = renderLazyWorkspace("team", "TeamWorkspace", "Loading team…", (T) => (
-        <T farm={farm} user={user} />
-      ));
+      view = <TeamWorkspace farm={farm} user={user} />;
       break;
     }
     case "livestock": {
-      view = renderLazyWorkspace("livestock", "LivestockWorkspace", "Loading livestock…", (LS) => (
-        <LS farm={farm} fields={fields} />
-      ));
+      view = <LivestockWorkspace farm={farm} fields={fields} />;
       break;
     }
     case "calendar": {
-      view = renderLazyWorkspace("calendar", "CalendarWorkspace", "Loading calendar…", (CL) => (
-        <CL farm={farm} fields={fields} />
-      ));
+      view = <CalendarWorkspace farm={farm} fields={fields} />;
       break;
     }
     case "inventory": {
-      view = renderLazyWorkspace("inventory", "InventoryWorkspace", "Loading inventory…", (IV) => (
-        <IV farm={farm} fields={fields} />
-      ));
+      view = <InventoryWorkspace farm={farm} fields={fields} />;
       break;
     }
     case "finance": {
-      view = renderLazyWorkspace("finance", "FinanceWorkspace", "Loading finance…", (FN) => (
-        <FN farm={farm} fields={fields} />
-      ));
+      view = <FinanceWorkspace farm={farm} fields={fields} />;
       break;
     }
     case "documents": {
-      view = renderLazyWorkspace("documents", "DocumentsWorkspace", "Loading documents…", (DC) => (
-        <DC farm={farm} fields={fields} />
-      ));
+      view = <DocumentsWorkspace farm={farm} fields={fields} />;
       break;
     }
     case "contacts": {
-      view = renderLazyWorkspace("contacts", "ContactsWorkspace", "Loading contacts…", (CT) => (
-        <CT farm={farm} fields={fields} />
-      ));
+      view = <ContactsWorkspace farm={farm} fields={fields} />;
       break;
     }
     case "market": {
-      view = renderLazyWorkspace("market", "MarketWorkspace", "Loading market…", (MK) => (
-        <MK farm={farm} fields={fields} />
-      ));
+      view = <MarketWorkspace farm={farm} fields={fields} />;
       break;
     }
     case "audit": {
-      view = renderLazyWorkspace("audit", "AuditWorkspace", "Loading audit prep…", (AU) => (
-        <AU farm={farm} fields={fields} />
-      ));
+      view = <AuditWorkspace farm={farm} fields={fields} />;
       break;
     }
     case "home":
@@ -1011,7 +964,7 @@ export default function TilthApp() {
           farm={farm}
           fields={fields}
           onNavigate={selectSection}
-          onMapFields={() => selectSection("fields")}
+          onMapFields={fields.length > 0 ? () => selectSection("fields") : resumeFieldMapping}
         />
       );
       break;

@@ -361,14 +361,11 @@ async function searchDocuments(req, res, json) {
   }
   const admin = adminClient();
   const embedding = await embedText(query);
-  const { data, error } = await admin.rpc("document_vault_match_chunks", {
-    p_farm_id: farmId,
-    p_query_embedding: embedding.embedding,
-    p_embedding_model: embedding.model,
-    p_match_count: Number(body.limit || 10),
+  const evidence = await retrieveDocumentEvidence(admin, farmId, query, {
+    embedding,
+    limit: Number(body.limit || 10),
   });
-  if (error) return json(res, 500, { error: error.message });
-  const matches = data || [];
+  const matches = evidence.matches || [];
   await Promise.all(matches.map((m) => audit({
     farmId,
     documentId: m.document_id,
@@ -381,6 +378,7 @@ async function searchDocuments(req, res, json) {
     query,
     embeddingModel: embedding.model,
     matches,
+    semanticError: evidence.semanticError || null,
     graphExpanded: false,
   });
 }
@@ -388,7 +386,10 @@ async function searchDocuments(req, res, json) {
 function sourcesFromMatches(matches) {
   return (matches || []).map((m) => ({
     chunk_id: m.chunk_id,
+    table_id: m.table_id,
+    figure_id: m.figure_id,
     document_id: m.document_id,
+    evidence_type: m.evidence_type,
     page_number: m.page_number,
     section_heading: m.section_heading,
     excerpt: String(m.chunk_text || "").slice(0, 300),
@@ -409,6 +410,132 @@ function documentsFromSources(sources) {
     });
   }
   return docs;
+}
+
+function queryTokens(query) {
+  return [...new Set(String(query || "")
+    .toLowerCase()
+    .match(/[a-z0-9][a-z0-9_-]{2,}/g) || [])]
+    .filter((token) => !["the", "and", "for", "with", "from", "document", "documents"].includes(token))
+    .slice(0, 8);
+}
+
+function textScore(text, tokens) {
+  const lower = String(text || "").toLowerCase();
+  if (!lower || !tokens.length) return 0;
+  return tokens.reduce((score, token) => score + (lower.includes(token) ? 1 : 0), 0);
+}
+
+function mergeEvidenceMatches(semanticMatches, evidenceMatches, limit) {
+  const seen = new Set();
+  const merged = [];
+  for (const match of [...(semanticMatches || []), ...(evidenceMatches || [])]) {
+    const key = match.chunk_id || match.table_id || match.figure_id || `${match.document_id}:${match.chunk_text}`;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(match);
+  }
+  return merged.slice(0, Math.max(1, Math.min(Number(limit || 10), 50)));
+}
+
+async function retrieveDocumentEvidence(admin, farmId, query, { embedding = null, limit = 10 } = {}) {
+  let semanticMatches = [];
+  let semanticError = null;
+  if (embedding?.embedding) {
+    const { data, error } = await admin.rpc("document_vault_match_chunks", {
+      p_farm_id: farmId,
+      p_query_embedding: embedding.embedding,
+      p_embedding_model: embedding.model,
+      p_match_count: Number(limit || 10),
+    });
+    if (error) semanticError = error.message;
+    else semanticMatches = (data || []).map((match) => ({ ...match, evidence_type: "semantic_chunk" }));
+  }
+
+  const tokens = queryTokens(query);
+  if (!tokens.length) return { matches: semanticMatches, semanticError };
+
+  const [chunkResult, tableResult, figureResult] = await Promise.all([
+    admin
+      .from("document_chunks")
+      .select("id,document_id,chunk_text,page_number,section_heading,table_reference,figure_reference,docling_metadata")
+      .eq("farm_id", farmId)
+      .order("updated_at", { ascending: false })
+      .limit(250),
+    admin
+      .from("document_tables")
+      .select("id,document_id,chunk_id,table_index,page_number,label,caption,markdown,plain_text")
+      .eq("farm_id", farmId)
+      .order("table_index", { ascending: true })
+      .limit(120),
+    admin
+      .from("document_figures")
+      .select("id,document_id,chunk_id,figure_index,page_number,label,caption,alt_text,figure_type")
+      .eq("farm_id", farmId)
+      .order("figure_index", { ascending: true })
+      .limit(120),
+  ]);
+
+  const keywordMatches = (chunkResult.data || [])
+    .map((chunk) => ({ chunk, score: textScore(chunk.chunk_text, tokens) }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Number(limit || 10))
+    .map(({ chunk, score }) => ({
+      chunk_id: chunk.id,
+      document_id: chunk.document_id,
+      chunk_text: chunk.chunk_text,
+      page_number: chunk.page_number,
+      section_heading: chunk.section_heading,
+      similarity: null,
+      metadata: {
+        retrieval: "keyword",
+        score,
+        table_reference: chunk.table_reference,
+        figure_reference: chunk.figure_reference,
+        docling: chunk.docling_metadata,
+      },
+      evidence_type: "keyword_chunk",
+    }));
+
+  const tableMatches = (tableResult.data || [])
+    .map((table) => ({ table, score: textScore([table.label, table.caption, table.plain_text, table.markdown].filter(Boolean).join("\n"), tokens) }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8)
+    .map(({ table, score }) => ({
+      table_id: table.id,
+      chunk_id: table.chunk_id,
+      document_id: table.document_id,
+      chunk_text: [table.label, table.caption, table.markdown || table.plain_text].filter(Boolean).join("\n\n"),
+      page_number: table.page_number,
+      section_heading: table.label || `Table ${table.table_index + 1}`,
+      similarity: null,
+      metadata: { retrieval: "table", score, table_index: table.table_index },
+      evidence_type: "table",
+    }));
+
+  const figureMatches = (figureResult.data || [])
+    .map((figure) => ({ figure, score: textScore([figure.label, figure.caption, figure.alt_text, figure.figure_type].filter(Boolean).join("\n"), tokens) }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8)
+    .map(({ figure, score }) => ({
+      figure_id: figure.id,
+      chunk_id: figure.chunk_id,
+      document_id: figure.document_id,
+      chunk_text: [figure.label, figure.caption, figure.alt_text].filter(Boolean).join("\n\n"),
+      page_number: figure.page_number,
+      section_heading: figure.label || `Figure ${figure.figure_index + 1}`,
+      similarity: null,
+      metadata: { retrieval: "figure", score, figure_type: figure.figure_type },
+      evidence_type: "figure",
+    }));
+
+  return {
+    matches: mergeEvidenceMatches(semanticMatches, [...keywordMatches, ...tableMatches, ...figureMatches], limit),
+    semanticError,
+  };
 }
 
 async function chatWithDocuments(req, res, json) {
@@ -457,15 +584,14 @@ async function chatWithDocuments(req, res, json) {
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => ({ role: m.role, content: m.content }));
   const embedding = await embedText(message);
-  const search = await admin.rpc("document_vault_match_chunks", {
-    p_farm_id: farmId,
-    p_query_embedding: embedding.embedding,
-    p_embedding_model: embedding.model,
-    p_match_count: 8,
+  const evidence = await retrieveDocumentEvidence(admin, farmId, message, {
+    embedding,
+    limit: 8,
   });
-  if (search.error) return json(res, 500, { error: search.error.message });
-  const matches = search.data || [];
-  const context = matches.map((m, i) => `[${i + 1}] ${m.chunk_text}`).join("\n\n");
+  const matches = evidence.matches || [];
+  const context = matches
+    .map((m, i) => `[${i + 1}] ${m.evidence_type || "document"}${m.page_number ? ` page ${m.page_number}` : ""}\n${m.chunk_text}`)
+    .join("\n\n");
   const llmAnswer = await chatCompletion([
     {
       role: "system",
@@ -532,15 +658,14 @@ async function generateReport(req, res, json) {
   }
   const admin = adminClient();
   const embedding = await embedText(prompt);
-  const search = await admin.rpc("document_vault_match_chunks", {
-    p_farm_id: farmId,
-    p_query_embedding: embedding.embedding,
-    p_embedding_model: embedding.model,
-    p_match_count: 12,
+  const evidence = await retrieveDocumentEvidence(admin, farmId, prompt, {
+    embedding,
+    limit: 12,
   });
-  if (search.error) return json(res, 500, { error: search.error.message });
-  const matches = search.data || [];
-  const context = matches.map((m, i) => `[${i + 1}] ${m.chunk_text}`).join("\n\n");
+  const matches = evidence.matches || [];
+  const context = matches
+    .map((m, i) => `[${i + 1}] ${m.evidence_type || "document"}${m.page_number ? ` page ${m.page_number}` : ""}\n${m.chunk_text}`)
+    .join("\n\n");
   const content = await chatCompletion([
     {
       role: "system",

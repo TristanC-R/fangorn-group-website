@@ -13,7 +13,7 @@ import {
   WorkspaceFrame,
 } from "../ui/primitives.jsx";
 import { supabase } from "../../lib/supabaseClient.js";
-import { getTilthApiBase } from "../../lib/tilthApi.js";
+import { fetchTilthApi, tilthApiConfigured } from "../../lib/tilthApi.js";
 import { cancelFarmTaskBySourceKey, titleWithSubject, upsertFarmTask } from "../../lib/farmTaskAutomation.js";
 import { tilthStore } from "../state/localStore.js";
 
@@ -127,6 +127,7 @@ function rowToDoc(row) {
     category: row.category || "general",
     filename: row.filename || "",
     uploadDate: row.created_at ? row.created_at.slice(0, 10) : "",
+    documentDate: row.metadata?.document_date || row.metadata?.extracted_details?.document_date || null,
     expiry: row.expiry_date || null,
     fieldId: row.field_id || null,
     tags: row.tags || [],
@@ -138,6 +139,7 @@ function rowToDoc(row) {
     status: row.status || "uploaded",
     errorMessage: row.error_message || null,
     deletedAt: row.deleted_at || null,
+    metadata: row.metadata || {},
   };
 }
 
@@ -158,6 +160,24 @@ const VAULT_PROMPTS = [
   "Draft a supplier payment summary.",
   "Which documents mention dates or deadlines?",
 ];
+
+const DOCUMENT_LOAD_RETRY_DELAYS = [600, 1500, 3000];
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      resolve(result.includes(",") ? result.split(",").pop() : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("Could not read file."));
+    reader.readAsDataURL(file);
+  });
+}
 
 function MiniStat({ label, value, tone }) {
   const toneMap = {
@@ -226,6 +246,16 @@ export function DocumentsWorkspace({ farm, fields }) {
 
   useEffect(() => {
     let cancelled = false;
+    async function fetchDocumentsOnce(signal) {
+      return supabase
+        .from("farm_documents")
+        .select("*")
+        .eq("farm_id", farmId)
+        .is("deleted_at", null)
+        .order("created_at", { ascending: false })
+        .abortSignal(signal);
+    }
+
     async function loadDocuments() {
       if (!farmId) {
         setDocs([]);
@@ -233,25 +263,39 @@ export function DocumentsWorkspace({ farm, fields }) {
         return;
       }
       if (!supabase) {
-        setError("Supabase is not configured, so the document vault cannot load.");
+        setError("The document vault is not available in this environment.");
         setLoading(false);
         return;
       }
       setLoading(true);
       setError(null);
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 12_000);
       try {
-        const { data, error: loadError } = await supabase
-          .from("farm_documents")
-          .select("*")
-          .eq("farm_id", farmId)
-          .is("deleted_at", null)
-          .order("created_at", { ascending: false })
-          .abortSignal(controller.signal);
+        let data = null;
+        let loadError = null;
+        let lastThrown = null;
+        for (let attempt = 0; attempt <= DOCUMENT_LOAD_RETRY_DELAYS.length; attempt += 1) {
+          const controller = new AbortController();
+          const timeout = window.setTimeout(() => controller.abort(), 12_000);
+          try {
+            const result = await fetchDocumentsOnce(controller.signal);
+            data = result.data;
+            loadError = result.error;
+            lastThrown = null;
+          } catch (err) {
+            lastThrown = err;
+          } finally {
+            window.clearTimeout(timeout);
+          }
+          if (cancelled) return;
+          if (!loadError && !lastThrown) break;
+          if (attempt >= DOCUMENT_LOAD_RETRY_DELAYS.length) break;
+          await wait(DOCUMENT_LOAD_RETRY_DELAYS[attempt]);
+          if (cancelled) return;
+        }
         if (cancelled) return;
+        if (lastThrown) throw lastThrown;
         if (loadError) {
-          setError(loadError.message);
+          setError("Could not load documents. Check your connection and try again.");
           setDocs([]);
         } else {
           setDocs((data || []).map(rowToDoc));
@@ -259,13 +303,12 @@ export function DocumentsWorkspace({ farm, fields }) {
       } catch (err) {
         if (!cancelled) {
           const message = err?.name === "AbortError"
-            ? "Document vault request timed out. Check Supabase URL, RLS policies, and network access."
-            : err?.message || "Could not load documents.";
+            ? "Document vault request timed out. Check your connection and try again."
+            : "Could not load documents. Check your connection and try again.";
           setError(message);
           setDocs([]);
         }
       } finally {
-        window.clearTimeout(timeout);
         if (!cancelled) setLoading(false);
       }
     }
@@ -352,6 +395,7 @@ export function DocumentsWorkspace({ farm, fields }) {
         (d) =>
           (d.title || "").toLowerCase().includes(q) ||
           (d.filename || "").toLowerCase().includes(q) ||
+          (d.notes || "").toLowerCase().includes(q) ||
           (d.tags || []).some((t) => t.toLowerCase().includes(q))
       );
     }
@@ -364,6 +408,26 @@ export function DocumentsWorkspace({ farm, fields }) {
       .sort((a, b) => new Date(a.expiry) - new Date(b.expiry));
   }, [docs]);
 
+  useEffect(() => {
+    if (!farmId) return;
+    for (const doc of docs) {
+      if (doc.expiry) {
+        upsertFarmTask(farmId, {
+          sourceKey: `document:${doc.id}:expiry`,
+          source: "document",
+          sourceId: doc.id,
+          title: titleWithSubject("Document expires", doc.title),
+          dueDate: doc.expiry,
+          category: "documents",
+          priority: "medium",
+          notes: "Automatically created from a document expiry date.",
+        });
+      } else {
+        cancelFarmTaskBySourceKey(farmId, `document:${doc.id}:expiry`);
+      }
+    }
+  }, [docs, farmId]);
+
   const resetForm = () => {
     setForm(EMPTY_FORM);
     setEditingId(null);
@@ -374,7 +438,7 @@ export function DocumentsWorkspace({ farm, fields }) {
 
   const handleSave = async () => {
     if (editingId && !form.title.trim()) return;
-    if (!editingId && !file && !form.filename.trim()) {
+    if (!editingId && !file) {
       setError("Choose a file to add to the vault.");
       return;
     }
@@ -383,7 +447,7 @@ export function DocumentsWorkspace({ farm, fields }) {
       return;
     }
     if (!supabase) {
-      setError("Supabase is not configured, so documents cannot be saved.");
+      setError("The document vault is not available in this environment.");
       return;
     }
     setSaving(true);
@@ -429,70 +493,20 @@ export function DocumentsWorkspace({ farm, fields }) {
         } else {
           cancelFarmTaskBySourceKey(farmId, `document:${doc.id}:expiry`);
         }
-      } else {
-        const docId = uid();
-        const submittedFilename = form.filename.trim() || file?.name || "document";
-        const submittedTitle = form.title.trim() || titleFromFilename(submittedFilename);
-        const safeName = submittedFilename.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const storagePath = `${farmId}/documents/${docId}/original/${safeName}`;
-        let uploadMeta = {
-          bucket: "farm-documents",
-          storage_path: storagePath,
-          content_type: file?.type || null,
-          size_bytes: file?.size || null,
-        };
-        if (file) {
-          const { error: uploadError } = await supabase.storage
-            .from("farm-documents")
-            .upload(storagePath, file, { upsert: false });
-          if (uploadError) throw new Error(uploadError.message);
-        }
-        const { data: authData } = await supabase.auth.getUser();
-        const { data, error: insertError } = await supabase
-          .from("farm_documents")
-          .insert({
-            id: docId,
-            farm_id: farmId,
-            field_id: form.fieldId || null,
-            uploaded_by: authData?.user?.id || null,
-            title: submittedTitle,
-            category: form.category,
-            filename: submittedFilename,
-            expiry_date: form.expiry || null,
-            tags,
-            notes: form.notes.trim(),
-            status: "queued",
-            metadata: {
-              auto_populate: true,
-              title_is_placeholder: !form.title.trim(),
-              source: "documents-workspace",
-            },
-            ...uploadMeta,
-          })
-          .select("*")
-          .single();
-        if (insertError) throw new Error(insertError.message);
-        const { error: jobError } = await supabase.from("document_processing_jobs").insert({
-          farm_id: farmId,
-          document_id: docId,
-          status: "queued",
-          metadata: { source: "documents-workspace" },
+      } else if (file) {
+        const result = await callVaultApi("/api/document-vault/documents", {
+          fieldId: form.fieldId || null,
+          filename: form.filename.trim() || file.name || "document",
+          title: form.title.trim(),
+          category: form.category,
+          expiryDate: form.expiry || null,
+          tags,
+          notes: form.notes.trim(),
+          mimeType: file.type || "application/octet-stream",
+          fileBase64: await fileToBase64(file),
         });
-        if (jobError) throw new Error(jobError.message);
-        const doc = rowToDoc(data);
-        setDocs((prev) => [doc, ...prev]);
-        if (doc.expiry) {
-          upsertFarmTask(farmId, {
-            sourceKey: `document:${doc.id}:expiry`,
-            source: "document",
-            sourceId: doc.id,
-            title: titleWithSubject("Document expires", doc.title),
-            dueDate: doc.expiry,
-            category: "documents",
-            priority: "medium",
-            notes: "Automatically created from a document expiry date.",
-          });
-        }
+        const doc = rowToDoc(result.document);
+        setDocs((prev) => [doc, ...prev.filter((item) => item.id !== doc.id)]);
       }
     } catch (err) {
       setError(err?.message || "Could not save document.");
@@ -608,16 +622,18 @@ export function DocumentsWorkspace({ farm, fields }) {
         });
       } else if (action.action_type === "finance_transaction") {
         const rows = tilthStore.loadFinances(farmId);
+        const amount = payload.amount ?? payload.amountDue ?? payload.totalAmount ?? payload.total ?? payload.grossAmount;
+        const vatAmount = payload.vatAmount ?? payload.vat ?? payload.vatTotal ?? payload.taxAmount;
         const entry = {
           id: payload.id || uid(),
           type: payload.type || "expense",
-          date: payload.date || new Date().toISOString().slice(0, 10),
-          amount: Number(payload.amount) || 0,
-          vatAmount: Number(payload.vatAmount) || 0,
+          date: payload.date || payload.invoiceDate || payload.documentDate || payload.transactionDate || payload.dueDate || new Date().toISOString().slice(0, 10),
+          amount: Number(amount) || 0,
+          vatAmount: Number(vatAmount) || 0,
           category: payload.category || "other",
           description: payload.description || action.title,
-          counterparty: payload.counterparty || "",
-          invoiceRef: payload.invoiceRef || "",
+          counterparty: payload.counterparty || payload.supplier || payload.vendor || payload.issuer || "",
+          invoiceRef: payload.invoiceRef || payload.invoiceNumber || payload.invoiceNo || payload.reference || "",
           fieldId: payload.fieldId || "",
           notes: payload.notes || "",
           sourceKey: payload.sourceKey || `document:${action.document_id}:finance`,
@@ -752,13 +768,12 @@ export function DocumentsWorkspace({ farm, fields }) {
   };
 
   const callVaultApi = async (path, body) => {
-    const base = getTilthApiBase();
-    if (!base) throw new Error("Set VITE_TILTH_API_URL and run npm run tilth-api to use vault intelligence.");
-    if (!supabase) throw new Error("Supabase is not configured.");
+    if (!tilthApiConfigured()) throw new Error("Document intelligence is not available right now.");
+    if (!supabase) throw new Error("The document vault is not available right now.");
     const { data } = await supabase.auth.getSession();
     const token = data?.session?.access_token;
     if (!token) throw new Error("You need to be signed in.");
-    const response = await fetch(`${base}${path}`, {
+    const response = await fetchTilthApi(path, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -1070,7 +1085,13 @@ export function DocumentsWorkspace({ farm, fields }) {
           {/* Document list */}
           {view === "list" && (
             <>
-              {filtered.length === 0 ? (
+              {loading ? (
+                <Card padding={18}>
+                  <Body size="sm" style={{ color: brand.muted }}>
+                    Loading document vault…
+                  </Body>
+                </Card>
+              ) : filtered.length === 0 ? (
                 <EmptyState
                   kicker="No documents"
                   title={docs.length ? "No matches" : "Document vault is empty"}
@@ -1100,7 +1121,7 @@ export function DocumentsWorkspace({ farm, fields }) {
                     >
                       <thead>
                         <tr>
-                          {["Title", "Category", "Filename", "Status", "Uploaded", "Expiry", "Field", "Tags", ""].map(
+                          {["Title", "Category", "Filename", "Status", "Uploaded", "Doc date", "Expiry", "Field", "Tags", ""].map(
                             (h) => (
                               <th
                                 key={h}
@@ -1191,6 +1212,16 @@ export function DocumentsWorkspace({ farm, fields }) {
                                 }}
                               >
                                 {fmtDate(d.uploadDate)}
+                              </td>
+                              <td
+                                style={{
+                                  padding: "8px 10px",
+                                  borderBottom: `1px solid ${brand.border}`,
+                                  color: brand.bodySoft,
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {d.documentDate ? fmtDate(d.documentDate) : <span style={{ color: brand.muted }}>—</span>}
                               </td>
                               <td
                                 style={{
@@ -1768,8 +1799,8 @@ export function DocumentsWorkspace({ farm, fields }) {
           <Card padding={12} tone="section">
             <Kicker style={{ marginBottom: 6 }}>About</Kicker>
             <Body size="sm" style={{ lineHeight: 1.55 }}>
-              Document records sync with your farm data. Uploads are stored privately in Supabase
-              and opened through short-lived signed links.
+              Document records sync with your farm data. Uploads are stored privately
+              and opened through short-lived secure links.
               Expiry tracking highlights documents due within 60 days (amber) or 30 days / expired (red).
             </Body>
           </Card>

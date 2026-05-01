@@ -17,8 +17,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const envFile = path.join(__dirname, ".env");
-if (fs.existsSync(envFile)) {
+const repoRoot = path.resolve(__dirname, "..");
+
+function loadEnvFile(envFile) {
+  if (!fs.existsSync(envFile)) return;
   const text = fs.readFileSync(envFile, "utf8");
   for (const line of text.split(/\n/)) {
     const trimmed = line.trim();
@@ -35,4 +37,12 @@ if (fs.existsSync(envFile)) {
     }
     if (key && process.env[key] === undefined) process.env[key] = val;
   }
+}
+
+for (const envFile of [
+  path.join(__dirname, ".env"),
+  path.join(repoRoot, ".env"),
+  path.join(__dirname, "document-worker", ".env"),
+]) {
+  loadEnvFile(envFile);
 }

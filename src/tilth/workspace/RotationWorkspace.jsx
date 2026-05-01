@@ -15,6 +15,7 @@ import {
 import { useLocalValue } from "../state/localStore.js";
 import { tilthStore } from "../state/localStore.js";
 import { CROP_CATALOGUE, CROP_NAMES } from "../../lib/cropPhenology.js";
+import { COMMODITY_PRICES } from "../../lib/costAnalysis.js";
 
 /* ── constants ──────────────────────────────────────────────────────── */
 
@@ -30,6 +31,14 @@ const FAMILY_COLORS = {
 const SEASONS = ["autumn", "spring", "summer"];
 const SEASON_LABELS = { autumn: "Aut", spring: "Spr", summer: "Sum" };
 const SEASON_MONTHS = { autumn: 9, spring: 3, summer: 6 };
+const STATUS_OPTIONS = ["planned", "drilled", "growing", "harvested", "failed"];
+const STATUS_LABELS = {
+  planned: "Planned",
+  drilled: "Drilled",
+  growing: "Growing",
+  harvested: "Harvested",
+  failed: "Failed",
+};
 
 const N_RATES = {
   cereal: 180,
@@ -38,6 +47,15 @@ const N_RATES = {
   root: 120,
   grass: 100,
   cover: 0,
+};
+
+const VARIABLE_COSTS = {
+  cereal: 520,
+  oilseed: 620,
+  pulse: 360,
+  root: 1_250,
+  grass: 240,
+  cover: 80,
 };
 
 const CURRENT_YEAR = new Date().getFullYear();
@@ -59,7 +77,7 @@ function familyColor(cropName) {
 
 function currentSeason() {
   const m = new Date().getMonth() + 1;
-  if (m >= 9 || m <= 11) return "autumn";
+  if (m >= 9 || m <= 2) return "autumn";
   if (m >= 3 && m <= 5) return "spring";
   return "summer";
 }
@@ -68,6 +86,143 @@ function getEntry(rotations, fieldId, year, season) {
   const arr = rotations[fieldId];
   if (!Array.isArray(arr)) return null;
   return arr.find((e) => e.year === year && e.season === season) || null;
+}
+
+function approxHectares(field) {
+  const explicit = Number(field?.area_ha ?? field?.areaHa ?? field?.hectares);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const ring = field?.boundary;
+  if (!Array.isArray(ring) || ring.length < 3) return 10;
+  let sum = 0;
+  for (let i = 0; i < ring.length; i += 1) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    sum += (Number(a.lng) || 0) * (Number(b.lat) || 0) - (Number(b.lng) || 0) * (Number(a.lat) || 0);
+  }
+  const sqDeg = Math.abs(sum) / 2;
+  const midLat = ring.reduce((acc, p) => acc + (Number(p.lat) || 0), 0) / ring.length;
+  return Math.max(0, (sqDeg * 111_132 * 111_320 * Math.cos((midLat * Math.PI) / 180)) / 10_000);
+}
+
+function dateForSeason(year, season) {
+  return `${year}-${String(SEASON_MONTHS[season] || 3).padStart(2, "0")}-15`;
+}
+
+function rotationEntryPatch({
+  crop,
+  status,
+  variety,
+  plantingDate,
+  harvestDate,
+  targetYield,
+  expectedPrice,
+  variableCostPerHa,
+  nitrogenKgHa,
+  complianceUse,
+  notes,
+}) {
+  const clean = {
+    crop,
+    status: status || "planned",
+    variety: variety?.trim() || "",
+    plantingDate: plantingDate || "",
+    harvestDate: harvestDate || "",
+    targetYield: targetYield === "" ? null : Number(targetYield),
+    expectedPrice: expectedPrice === "" ? null : Number(expectedPrice),
+    variableCostPerHa: variableCostPerHa === "" ? null : Number(variableCostPerHa),
+    nitrogenKgHa: nitrogenKgHa === "" ? null : Number(nitrogenKgHa),
+    complianceUse: complianceUse?.trim() || "",
+    notes: notes?.trim() || "",
+  };
+  for (const key of ["targetYield", "expectedPrice", "variableCostPerHa", "nitrogenKgHa"]) {
+    if (!Number.isFinite(clean[key])) clean[key] = null;
+  }
+  return clean;
+}
+
+function projectedMargin(entry, hectares = 0) {
+  const yieldTHa = Number(entry?.targetYield);
+  const price = Number(entry?.expectedPrice ?? COMMODITY_PRICES[entry?.crop]);
+  const cost = Number(entry?.variableCostPerHa ?? VARIABLE_COSTS[cropFamily(entry?.crop)]);
+  if (!Number.isFinite(yieldTHa) || !Number.isFinite(price)) return null;
+  const marginPerHa = yieldTHa * price - (Number.isFinite(cost) ? cost : 0);
+  return {
+    revenue: yieldTHa * price * hectares,
+    variableCost: (Number.isFinite(cost) ? cost : 0) * hectares,
+    margin: marginPerHa * hectares,
+    marginPerHa,
+  };
+}
+
+function currentRotationEntry(entries) {
+  const currentIdx = SEASONS.indexOf(currentSeason());
+  const usable = (entries || [])
+    .filter((entry) => {
+      if (entry.year !== CURRENT_YEAR || !entry.crop || entry.status === "failed") return false;
+      if (["drilled", "growing", "harvested"].includes(entry.status)) return true;
+      return SEASONS.indexOf(entry.season) <= currentIdx;
+    })
+    .sort((a, b) => SEASONS.indexOf(b.season) - SEASONS.indexOf(a.season));
+  return usable.find((entry) => ["drilled", "growing", "harvested"].includes(entry.status)) || usable[0] || null;
+}
+
+function syncCurrentPlantingFromRotation(farmId, fieldId, entries) {
+  if (!farmId || !fieldId) return;
+  const current = currentRotationEntry(entries);
+  if (!current?.crop) return;
+
+  const all = tilthStore.loadPlantings(farmId);
+  const existing = Array.isArray(all[fieldId]) ? [...all[fieldId]] : [];
+  const sourceKey = `rotation:${fieldId}:${current.year}`;
+  const planting = {
+    id: existing.find((item) => item.sourceKey === sourceKey)?.id || sourceKey,
+    sourceKey,
+    source: "rotation",
+    rotationEntryId: current.id,
+    crop: current.crop,
+    cropYear: current.year,
+    season: current.season,
+    status: current.status || "planned",
+    variety: current.variety || "",
+    plantingDate: current.plantingDate || dateForSeason(current.year, current.season),
+    harvestDate: current.harvestDate || "",
+    targetYield: current.targetYield ?? null,
+    expectedPrice: current.expectedPrice ?? null,
+    variableCostPerHa: current.variableCostPerHa ?? null,
+    nitrogenKgHa: current.nitrogenKgHa ?? null,
+    complianceUse: current.complianceUse || "",
+    notes: current.notes || "Synced from rotation plan",
+    updatedAt: new Date().toISOString(),
+    createdAt: existing.find((item) => item.sourceKey === sourceKey)?.createdAt || new Date().toISOString(),
+  };
+  all[fieldId] = [planting, ...existing.filter((item) => item.sourceKey !== sourceKey && item.id !== planting.id)];
+  tilthStore.savePlantings(farmId, all);
+
+  const attrs = tilthStore.loadFieldAttrs(farmId);
+  attrs[fieldId] = {
+    ...(attrs[fieldId] || {}),
+    crop: current.crop,
+    cropYear: current.year,
+    rotationStatus: current.status || "planned",
+    variety: current.variety || "",
+    targetYield: current.targetYield ?? attrs[fieldId]?.targetYield,
+    expectedPrice: current.expectedPrice ?? attrs[fieldId]?.expectedPrice,
+    variableCostPerHa: current.variableCostPerHa ?? attrs[fieldId]?.variableCostPerHa,
+    nitrogenKgHa: current.nitrogenKgHa ?? attrs[fieldId]?.nitrogenKgHa,
+    complianceUse: current.complianceUse || attrs[fieldId]?.complianceUse || "",
+  };
+  tilthStore.saveFieldAttrs(farmId, attrs);
+}
+
+function removeRotationPlanting(farmId, fieldId) {
+  if (!farmId || !fieldId) return;
+  const all = tilthStore.loadPlantings(farmId);
+  const existing = Array.isArray(all[fieldId]) ? all[fieldId] : [];
+  const next = existing.filter((item) => item.source !== "rotation" && item.sourceKey !== `rotation:${fieldId}:${CURRENT_YEAR}`);
+  if (next.length !== existing.length) {
+    all[fieldId] = next;
+    tilthStore.savePlantings(farmId, all);
+  }
 }
 
 /* ── rotation validation ─────────────────────────────────────────────── */
@@ -129,12 +284,37 @@ function validateField(entries) {
   }
 
   for (const e of sorted) {
+    if (!e.crop) continue;
     if (cropFamily(e.crop) === "pulse") {
       warnings.push({
         year: e.year,
         season: e.season,
         type: "ok",
         msg: "Pulse crop — N fixation benefit",
+      });
+    }
+    if (e.status === "planned" && e.year === CURRENT_YEAR) {
+      warnings.push({
+        year: e.year,
+        season: e.season,
+        type: "warn",
+        msg: "Current crop is still marked planned — confirm drilling/growing status",
+      });
+    }
+    if (!e.plantingDate && e.year === CURRENT_YEAR) {
+      warnings.push({
+        year: e.year,
+        season: e.season,
+        type: "warn",
+        msg: "Missing drilling/planting date — crop stage analysis will be weaker",
+      });
+    }
+    if (e.targetYield != null && e.expectedPrice != null && e.variableCostPerHa == null) {
+      warnings.push({
+        year: e.year,
+        season: e.season,
+        type: "warn",
+        msg: "Add variable cost/ha to improve margin projections",
       });
     }
   }
@@ -162,14 +342,44 @@ function exportCsv(rotations, fields) {
   const fieldMap = {};
   for (const f of fields) fieldMap[f.id] = f.name || f.id;
 
-  const rows = [["Field", "Year", "Season", "Crop", "Notes"]];
+  const rows = [[
+    "Field",
+    "Year",
+    "Season",
+    "Crop",
+    "Status",
+    "Variety",
+    "Planting date",
+    "Harvest date",
+    "Target yield t/ha",
+    "Expected price",
+    "Variable cost/ha",
+    "Nitrogen kg/ha",
+    "Compliance use",
+    "Notes",
+  ]];
   for (const fid of Object.keys(rotations)) {
     const entries = rotations[fid] || [];
     const sorted = [...entries].sort(
       (a, b) => a.year - b.year || SEASONS.indexOf(a.season) - SEASONS.indexOf(b.season),
     );
     for (const e of sorted) {
-      rows.push([fieldMap[fid] || fid, e.year, e.season, e.crop, e.notes || ""]);
+      rows.push([
+        fieldMap[fid] || fid,
+        e.year,
+        e.season,
+        e.crop,
+        e.status || "",
+        e.variety || "",
+        e.plantingDate || "",
+        e.harvestDate || "",
+        e.targetYield ?? "",
+        e.expectedPrice ?? "",
+        e.variableCostPerHa ?? "",
+        e.nitrogenKgHa ?? "",
+        e.complianceUse || "",
+        e.notes || "",
+      ]);
     }
   }
 
@@ -187,11 +397,14 @@ function exportCsv(rotations, fields) {
 
 function computeSummary(rotations, fields, warnings) {
   const fieldAreaMap = {};
-  for (const f of fields) fieldAreaMap[f.id] = f.area_ha ?? f.areaHa ?? 10;
+  for (const f of fields) fieldAreaMap[f.id] = approxHectares(f);
 
   const cropMixByYear = {};
+  const marginByYear = {};
+  const missingAnalysisInputs = [];
   for (const yr of YEARS) {
     const mix = {};
+    const margin = { revenue: 0, variableCost: 0, margin: 0, fields: 0, completeFields: 0 };
     for (const fid of Object.keys(rotations)) {
       const entries = rotations[fid] || [];
       const yearEntries = entries.filter((e) => e.year === yr);
@@ -199,9 +412,20 @@ function computeSummary(rotations, fields, warnings) {
       for (const e of yearEntries) {
         if (!e.crop) continue;
         mix[e.crop] = (mix[e.crop] || 0) + ha;
+        margin.fields += 1;
+        const projected = projectedMargin(e, ha);
+        if (projected) {
+          margin.revenue += projected.revenue;
+          margin.variableCost += projected.variableCost;
+          margin.margin += projected.margin;
+          margin.completeFields += 1;
+        } else if (yr === CURRENT_YEAR) {
+          missingAnalysisInputs.push({ fieldId: fid, crop: e.crop });
+        }
       }
     }
     cropMixByYear[yr] = mix;
+    marginByYear[yr] = margin;
   }
 
   let totalViolations = 0;
@@ -230,14 +454,35 @@ function computeSummary(rotations, fields, warnings) {
   }
   const fieldsWithoutCover = fields.filter((f) => !coverFields.has(f.id));
 
-  return { cropMixByYear, totalViolations, nBudget, fieldsWithoutCover };
+  const currentEntries = Object.entries(rotations)
+    .map(([fieldId, entries]) => ({ fieldId, entry: currentRotationEntry(entries || []) }))
+    .filter((row) => row.entry?.crop);
+
+  return {
+    cropMixByYear,
+    totalViolations,
+    nBudget,
+    fieldsWithoutCover,
+    marginByYear,
+    missingAnalysisInputs,
+    currentEntries,
+  };
 }
 
 /* ── sub-components ──────────────────────────────────────────────────── */
 
-function InlineForm({ cropName, notes, onSave, onDelete, onClose }) {
-  const [crop, setCrop] = useState(cropName || "");
-  const [note, setNote] = useState(notes || "");
+function InlineForm({ entry, year, season, onSave, onDelete, onClose }) {
+  const [crop, setCrop] = useState(entry?.crop || "");
+  const [status, setStatus] = useState(entry?.status || "planned");
+  const [variety, setVariety] = useState(entry?.variety || "");
+  const [plantingDate, setPlantingDate] = useState(entry?.plantingDate || dateForSeason(year, season));
+  const [harvestDate, setHarvestDate] = useState(entry?.harvestDate || "");
+  const [targetYield, setTargetYield] = useState(entry?.targetYield ?? "");
+  const [expectedPrice, setExpectedPrice] = useState(entry?.expectedPrice ?? "");
+  const [variableCostPerHa, setVariableCostPerHa] = useState(entry?.variableCostPerHa ?? "");
+  const [nitrogenKgHa, setNitrogenKgHa] = useState(entry?.nitrogenKgHa ?? "");
+  const [complianceUse, setComplianceUse] = useState(entry?.complianceUse || "");
+  const [note, setNote] = useState(entry?.notes || "");
   const ref = useRef(null);
 
   useEffect(() => {
@@ -247,6 +492,13 @@ function InlineForm({ cropName, notes, onSave, onDelete, onClose }) {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [onClose]);
+
+  useEffect(() => {
+    if (!crop) return;
+    if (expectedPrice === "" && COMMODITY_PRICES[crop] != null) setExpectedPrice(COMMODITY_PRICES[crop]);
+    if (variableCostPerHa === "") setVariableCostPerHa(VARIABLE_COSTS[cropFamily(crop)] ?? "");
+    if (nitrogenKgHa === "") setNitrogenKgHa(N_RATES[cropFamily(crop)] ?? "");
+  }, [crop, expectedPrice, nitrogenKgHa, variableCostPerHa]);
 
   return (
     <div
@@ -260,7 +512,8 @@ function InlineForm({ cropName, notes, onSave, onDelete, onClose }) {
         border: `1px solid ${brand.border}`,
         borderRadius: radius.base,
         padding: 12,
-        width: 220,
+        width: 300,
+        maxWidth: "calc(100vw - 32px)",
         boxShadow: "0 12px 40px rgba(16,78,63,0.12)",
         display: "flex",
         flexDirection: "column",
@@ -282,6 +535,108 @@ function InlineForm({ cropName, notes, onSave, onDelete, onClose }) {
         ))}
       </select>
 
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <label>
+          <FieldLabel>Status</FieldLabel>
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            style={{ ...inputStyle, fontSize: 12, padding: "8px 10px", width: "100%" }}
+          >
+            {STATUS_OPTIONS.map((option) => (
+              <option key={option} value={option}>{STATUS_LABELS[option]}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <FieldLabel>Variety</FieldLabel>
+          <input
+            type="text"
+            value={variety}
+            onChange={(e) => setVariety(e.target.value)}
+            placeholder="e.g. Extase"
+            style={{ ...inputStyle, fontSize: 12, padding: "8px 10px", width: "100%" }}
+          />
+        </label>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <label>
+          <FieldLabel>Drilled / planted</FieldLabel>
+          <input
+            type="date"
+            value={plantingDate}
+            onChange={(e) => setPlantingDate(e.target.value)}
+            style={{ ...inputStyle, fontSize: 12, padding: "8px 10px", width: "100%" }}
+          />
+        </label>
+        <label>
+          <FieldLabel>Harvest</FieldLabel>
+          <input
+            type="date"
+            value={harvestDate}
+            onChange={(e) => setHarvestDate(e.target.value)}
+            style={{ ...inputStyle, fontSize: 12, padding: "8px 10px", width: "100%" }}
+          />
+        </label>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 6 }}>
+        <label>
+          <FieldLabel>t/ha</FieldLabel>
+          <input
+            type="number"
+            min="0"
+            step="0.1"
+            value={targetYield}
+            onChange={(e) => setTargetYield(e.target.value)}
+            style={{ ...inputStyle, fontSize: 12, padding: "8px 8px", width: "100%" }}
+          />
+        </label>
+        <label>
+          <FieldLabel>£/t</FieldLabel>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={expectedPrice}
+            onChange={(e) => setExpectedPrice(e.target.value)}
+            style={{ ...inputStyle, fontSize: 12, padding: "8px 8px", width: "100%" }}
+          />
+        </label>
+        <label>
+          <FieldLabel>£/ha</FieldLabel>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={variableCostPerHa}
+            onChange={(e) => setVariableCostPerHa(e.target.value)}
+            style={{ ...inputStyle, fontSize: 12, padding: "8px 8px", width: "100%" }}
+          />
+        </label>
+        <label>
+          <FieldLabel>N kg</FieldLabel>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={nitrogenKgHa}
+            onChange={(e) => setNitrogenKgHa(e.target.value)}
+            style={{ ...inputStyle, fontSize: 12, padding: "8px 8px", width: "100%" }}
+          />
+        </label>
+      </div>
+
+      <FieldLabel>Compliance / scheme use</FieldLabel>
+      <input
+        type="text"
+        value={complianceUse}
+        onChange={(e) => setComplianceUse(e.target.value)}
+        placeholder="e.g. SFI cover, stewardship, NVZ"
+        style={{ ...inputStyle, fontSize: 12, padding: "8px 10px" }}
+      />
+
       <FieldLabel>Notes</FieldLabel>
       <input
         type="text"
@@ -295,7 +650,23 @@ function InlineForm({ cropName, notes, onSave, onDelete, onClose }) {
         <Button
           size="sm"
           disabled={!crop}
-          onClick={() => onSave(crop, note)}
+          onClick={() =>
+            onSave(
+              rotationEntryPatch({
+                crop,
+                status,
+                variety,
+                plantingDate,
+                harvestDate,
+                targetYield,
+                expectedPrice,
+                variableCostPerHa,
+                nitrogenKgHa,
+                complianceUse,
+                notes: note,
+              }),
+            )
+          }
           style={{ flex: 1 }}
         >
           Save
@@ -369,6 +740,7 @@ function CropCell({ entry, warnings, onOpen }) {
   }
 
   const bg = familyColor(entry.crop);
+  const margin = projectedMargin(entry, 1);
   return (
     <div
       onClick={onOpen}
@@ -382,7 +754,14 @@ function CropCell({ entry, warnings, onOpen }) {
       }}
     >
       <span
-        title={`${entry.crop}${entry.notes ? ` — ${entry.notes}` : ""}`}
+        title={[
+          entry.crop,
+          entry.variety,
+          STATUS_LABELS[entry.status],
+          entry.plantingDate ? `Planted ${entry.plantingDate}` : "",
+          margin ? `Projected ${Math.round(margin.marginPerHa).toLocaleString()} per ha` : "",
+          entry.notes,
+        ].filter(Boolean).join(" - ")}
         style={{
           display: "inline-block",
           maxWidth: "100%",
@@ -402,6 +781,20 @@ function CropCell({ entry, warnings, onOpen }) {
         }}
       >
         {entry.crop}
+      </span>
+      <span
+        style={{
+          fontFamily: fonts.mono,
+          fontSize: 8,
+          color: brand.muted,
+          maxWidth: "100%",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {entry.status ? STATUS_LABELS[entry.status] : "Plan"}
+        {margin ? ` · £${Math.round(margin.marginPerHa).toLocaleString()}/ha` : ""}
       </span>
       <WarningDots items={warnings} />
     </div>
@@ -444,7 +837,15 @@ function MiniBar({ mix, maxHa }) {
 }
 
 function SummaryPanel({ rotations, fields, warnings }) {
-  const { cropMixByYear, totalViolations, nBudget, fieldsWithoutCover } = useMemo(
+  const {
+    cropMixByYear,
+    totalViolations,
+    nBudget,
+    fieldsWithoutCover,
+    marginByYear,
+    missingAnalysisInputs,
+    currentEntries,
+  } = useMemo(
     () => computeSummary(rotations, fields, warnings),
     [rotations, fields, warnings],
   );
@@ -479,7 +880,13 @@ function SummaryPanel({ rotations, fields, warnings }) {
           <Pill tone={totalViolations ? "danger" : "ok"}>
             {totalViolations} violation{totalViolations !== 1 ? "s" : ""}
           </Pill>
+          <Pill tone={currentEntries.length === fields.length ? "ok" : "warn"}>
+            {currentEntries.length}/{fields.length} current crops
+          </Pill>
         </div>
+        <Body size="sm" color={brand.muted}>
+          Current crop-year plans feed crop health, notifications, finance, and compliance checks.
+        </Body>
       </Subpanel>
 
       <Divider />
@@ -524,6 +931,39 @@ function SummaryPanel({ rotations, fields, warnings }) {
             </span>
           </div>
         ))}
+      </Subpanel>
+
+      <Divider />
+
+      <Subpanel kicker="Finance" title="Margin projection">
+        {YEARS.map((yr) => {
+          const row = marginByYear[yr];
+          const value = row?.completeFields ? row.margin : null;
+          return (
+            <div
+              key={yr}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontFamily: fonts.sans,
+                fontSize: 12,
+                color: brand.body,
+                padding: "3px 0",
+              }}
+            >
+              <span>{yr}</span>
+              <span style={{ fontFamily: fonts.mono, fontSize: 11, color: value == null ? brand.muted : value >= 0 ? brand.ok : brand.danger }}>
+                {value == null ? "Add yield/price" : `£${Math.round(value).toLocaleString()}`}
+              </span>
+            </div>
+          );
+        })}
+        {missingAnalysisInputs.length ? (
+          <Body size="sm" color={brand.muted} style={{ marginTop: 6 }}>
+            Add yield, price, and cost to {missingAnalysisInputs.length} current crop
+            {missingAnalysisInputs.length !== 1 ? "s" : ""} for better margins.
+          </Body>
+        ) : null}
       </Subpanel>
 
       <Divider />
@@ -603,6 +1043,15 @@ export function RotationWorkspace({ farm, fields }) {
             year: yr,
             season,
             startMonth: SEASON_MONTHS[season],
+            status: current.status || "growing",
+            variety: current.variety || "",
+            plantingDate: current.plantingDate || dateForSeason(yr, season),
+            harvestDate: current.harvestDate || "",
+            targetYield: current.targetYield ?? null,
+            expectedPrice: current.expectedPrice ?? COMMODITY_PRICES[current.crop] ?? null,
+            variableCostPerHa: current.variableCostPerHa ?? VARIABLE_COSTS[cropFamily(current.crop)] ?? null,
+            nitrogenKgHa: current.nitrogenKgHa ?? N_RATES[cropFamily(current.crop)] ?? null,
+            complianceUse: current.complianceUse || "",
             notes: "Auto-populated from planting",
           },
         ];
@@ -614,40 +1063,39 @@ export function RotationWorkspace({ farm, fields }) {
   const warnings = useMemo(() => allWarnings(merged), [merged]);
 
   const saveEntry = useCallback(
-    (fieldId, year, season, crop, notes) => {
-      setRotations((prev) => {
-        const arr = Array.isArray(prev[fieldId]) ? [...prev[fieldId]] : [];
-        const idx = arr.findIndex((e) => e.year === year && e.season === season);
-        if (idx >= 0) {
-          arr[idx] = { ...arr[idx], crop, notes };
-        } else {
-          arr.push({
-            id: uid(),
-            crop,
-            year,
-            season,
-            startMonth: SEASON_MONTHS[season],
-            notes,
-          });
-        }
-        return { ...prev, [fieldId]: arr };
-      });
+    (fieldId, year, season, patch) => {
+      const arr = Array.isArray(rotations[fieldId]) ? [...rotations[fieldId]] : [];
+      const idx = arr.findIndex((e) => e.year === year && e.season === season);
+      if (idx >= 0) {
+        arr[idx] = { ...arr[idx], ...patch, year, season, startMonth: SEASON_MONTHS[season] };
+      } else {
+        arr.push({
+          id: uid(),
+          ...patch,
+          year,
+          season,
+          startMonth: SEASON_MONTHS[season],
+        });
+      }
+      const next = { ...rotations, [fieldId]: arr };
+      setRotations(next);
+      syncCurrentPlantingFromRotation(farmId, fieldId, arr);
       setEditCell(null);
     },
-    [setRotations],
+    [farmId, rotations, setRotations],
   );
 
   const deleteEntry = useCallback(
     (fieldId, year, season) => {
-      setRotations((prev) => {
-        const arr = (prev[fieldId] || []).filter(
-          (e) => !(e.year === year && e.season === season),
-        );
-        return { ...prev, [fieldId]: arr };
-      });
+      const arr = (rotations[fieldId] || []).filter(
+        (e) => !(e.year === year && e.season === season),
+      );
+      setRotations({ ...rotations, [fieldId]: arr });
+      if (currentRotationEntry(arr)) syncCurrentPlantingFromRotation(farmId, fieldId, arr);
+      else removeRotationPlanting(farmId, fieldId);
       setEditCell(null);
     },
-    [setRotations],
+    [farmId, rotations, setRotations],
   );
 
   if (!fields || !fields.length) {
@@ -666,9 +1114,9 @@ export function RotationWorkspace({ farm, fields }) {
     editCell && editCell.fieldId === fid && editCell.year === yr && editCell.season === s;
 
   const FIELD_COL = 180;
-  const CELL_W = 78;
+  const CELL_W = 102;
   const HEADER_H = 52;
-  const ROW_H = 50;
+  const ROW_H = 62;
 
   return (
     <WorkspaceFrame
@@ -869,9 +1317,10 @@ export function RotationWorkspace({ farm, fields }) {
                           />
                           {editing && (
                             <InlineForm
-                              cropName={entry?.crop || ""}
-                              notes={entry?.notes || ""}
-                              onSave={(crop, notes) => saveEntry(fid, yr, s, crop, notes)}
+                              entry={entry}
+                              year={yr}
+                              season={s}
+                              onSave={(patch) => saveEntry(fid, yr, s, patch)}
                               onDelete={
                                 entry ? () => deleteEntry(fid, yr, s) : undefined
                               }

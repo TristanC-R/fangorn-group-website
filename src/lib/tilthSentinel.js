@@ -76,7 +76,11 @@ export async function triggerNdviRefresh(fieldId, options = {}) {
     );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const err = data?.error || `HTTP ${res.status}`;
+      const err = data?.error || (
+        res.status === 404
+          ? "Tilth API route was not found. Start the Tilth API or set VITE_TILTH_API_URL to the API host."
+          : `HTTP ${res.status}`
+      );
       console.warn(`[tilthSentinel] triggerNdviRefresh(${fieldId}) — ${err}`);
       return { ok: false, error: err };
     }
@@ -158,8 +162,11 @@ export function useSentinelQueueStatus({ pollMs = 3000 } = {}) {
     let alive = true;
     const tick = async () => {
       try {
+        const auth = await getAuthHeader();
+        if (!auth) return;
         const res = await fetch(`${base}/api/sentinel/status`, {
           method: "GET",
+          headers: { Authorization: auth },
         });
         if (!res.ok) return;
         const body = await res.json();

@@ -79,7 +79,7 @@ export function WeatherWorkspace({ farm, fields }) {
       <WorkspaceFrame
         header={<SectionHeader kicker="Forecast" title="Weather" description="Map at least one field to enable weather forecasting." />}
       >
-        <EmptyState title="No location" message="Add field boundaries so we can look up your local forecast." />
+        <EmptyState title="No location" description="Add field boundaries so we can look up your local forecast." />
       </WorkspaceFrame>
     );
   }
@@ -98,7 +98,9 @@ export function WeatherWorkspace({ farm, fields }) {
         {loading ? (
           <Body size="sm" style={{ padding: 20 }}>Loading forecast…</Body>
         ) : error ? (
-          <Body size="sm" style={{ padding: 20, color: brand.danger }}>{String(error)}</Body>
+          <Body size="sm" style={{ padding: 20, color: brand.danger }}>
+            We could not load the forecast right now. Check your connection and try again.
+          </Body>
         ) : (
           <>
             {/* 7-day strip */}

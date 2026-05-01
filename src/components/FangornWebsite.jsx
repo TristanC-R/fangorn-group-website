@@ -73,6 +73,7 @@ const DEFAULT_ACCEPT =
 
 const NoiseOverlay = () => (
   <svg
+    className="site-noise-overlay"
     style={{
       position: "fixed",
       top: 0,
@@ -157,7 +158,7 @@ export default function FangornWebsite() {
     setContactError(null);
     if (!supabase) {
       setContactError(
-        "Supabase is not configured yet. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY."
+        "Sign-in is not available in this environment yet. Please contact Fangorn for access."
       );
       return;
     }
@@ -181,7 +182,7 @@ export default function FangornWebsite() {
     setContactError(null);
     if (!supabase) {
       setContactError(
-        "Supabase is not configured yet. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY."
+        "Sign-in is not available in this environment yet. Please contact Fangorn for access."
       );
       return;
     }
@@ -205,7 +206,7 @@ export default function FangornWebsite() {
     setContactError(null);
     if (!supabase) {
       setContactError(
-        "Supabase is not configured yet. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY."
+        "Account creation is not available in this environment yet. Please contact Fangorn for access."
       );
       return;
     }
@@ -347,7 +348,7 @@ export default function FangornWebsite() {
     try {
       if (!supabase) {
         throw new Error(
-          "Supabase is not configured yet. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY."
+          "The enquiry form is not available in this environment yet. Please contact Fangorn directly."
         );
       }
       setContactSubmitting(true);
@@ -629,6 +630,7 @@ export default function FangornWebsite() {
         @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=JetBrains+Mono:wght@300;400&family=Montserrat:wght@600;700&display=swap');
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { overflow-x: hidden; }
 
         @keyframes fadeInLine { from { opacity: 0; } to { opacity: 1; } }
         @keyframes fadeUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
@@ -1172,17 +1174,26 @@ export default function FangornWebsite() {
         }
 
         @media (max-width: 768px) {
+          .site-noise-overlay { display: none; }
           .partner-grid { grid-template-columns: 1fr; }
           .service-grid { grid-template-columns: 1fr !important; }
           .project-grid { grid-template-columns: 1fr !important; }
-          .hero-title { font-size: 42px !important; line-height: 1.1 !important; }
+          .hero-title { font-size: clamp(44px, 16vw, 64px) !important; line-height: 1.05 !important; }
           .hero-sub { font-size: 16px !important; }
-          .hero-tilth-card { grid-template-columns: 1fr; max-width: 100%; }
+          .hero-tilth-card { grid-template-columns: 1fr; width: 100%; max-width: 100%; }
           .hero-tilth-arrow { display: none; }
-          .section-padding { padding: 60px 20px !important; }
+          .section-padding { padding: 88px 20px 56px !important; }
           .stat-grid { grid-template-columns: 1fr 1fr !important; }
           .two-col { grid-template-columns: 1fr !important; gap: 40px !important; }
           .nav-links { display: none !important; }
+          .cta-btn { width: 100%; text-align: center; padding: 14px 18px; }
+        }
+
+        @media (max-width: 460px) {
+          .nav-brand img { max-width: min(220px, 58vw) !important; height: auto !important; }
+          .hero-title { font-size: clamp(40px, 15vw, 58px) !important; }
+          .hero-sub { line-height: 1.55 !important; }
+          .stat-grid { grid-template-columns: 1fr !important; }
         }
       `}</style>
 
@@ -2903,16 +2914,8 @@ export default function FangornWebsite() {
                       className="contact-form-hint"
                       style={{ marginTop: 10, marginBottom: 0 }}
                     >
-                      Setup needed: add{" "}
-                      <code style={{ fontFamily: "'JetBrains Mono', monospace" }}>
-                        VITE_SUPABASE_URL
-                      </code>{" "}
-                      and{" "}
-                      <code style={{ fontFamily: "'JetBrains Mono', monospace" }}>
-                        VITE_SUPABASE_ANON_KEY
-                      </code>{" "}
-                      to your <code>.env</code> (and Netlify env vars), then
-                      restart the dev server.
+                      Sign-in and saved enquiries are not available in this environment yet.
+                      Please contact Fangorn directly if you need access.
                     </p>
                   )}
                 </div>

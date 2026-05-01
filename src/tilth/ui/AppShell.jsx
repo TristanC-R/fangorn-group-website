@@ -9,18 +9,17 @@ const NAV_MODE_KEY = "tilth_nav_mode";
 
 const NAV_GROUPS = {
   simple: [
-    { title: "Start here", sections: ["home", "calendar", "fields", "weather"] },
-    { title: "Daily work", sections: ["livestock", "records", "inventory", "observations", "insights"] },
-    { title: "Money & paperwork", sections: ["finance", "documents", "contacts", "reports"] },
-    { title: "Rules", sections: ["compliance", "audit", "team"] },
+    { title: "Start here", sections: ["home", "fields", "calendar", "weather"] },
+    { title: "Daily work", sections: ["records", "inventory", "observations"] },
+    { title: "Paperwork", sections: ["documents", "contacts"] },
   ],
   full: [
     { title: "Start here", sections: ["home", "calendar", "fields", "weather"] },
-    { title: "Crops", sections: ["records", "yield", "rotation", "observations", "submissions"] },
-    { title: "Animals & store", sections: ["livestock", "inventory"] },
+    { title: "Daily work", sections: ["records", "inventory", "observations", "livestock"] },
+    { title: "Planning", sections: ["yield", "rotation", "submissions"] },
     { title: "Business", sections: ["finance", "costs", "market", "documents", "contacts", "reports"] },
     { title: "Advanced maps", sections: ["insights", "compare", "sensing", "soil"] },
-    { title: "Admin", sections: ["compliance", "audit", "team"] },
+    { title: "Admin & rules", sections: ["compliance", "audit", "team"] },
   ],
 };
 
@@ -502,6 +501,21 @@ export function AppShell({
                   {label}
                 </button>
               ))}
+            </div>
+            <div
+              style={{
+                margin: "-4px 0 14px",
+                padding: "0 2px 12px",
+                borderBottom: `1px solid ${brand.border}`,
+                fontFamily: fonts.sans,
+                fontSize: 11.5,
+                lineHeight: 1.45,
+                color: brand.bodySoft,
+              }}
+            >
+              {navMode === "simple"
+                ? "Simple shows the everyday jobs most farmers need first."
+                : "Full adds reports, finance, advanced maps, compliance, and admin tools."}
             </div>
             {navGroups.map((group) => (
               <NavGroup

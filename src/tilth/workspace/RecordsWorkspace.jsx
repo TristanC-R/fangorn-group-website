@@ -291,7 +291,7 @@ function NBudgetBar({ current, cap, label }) {
 
 // ─── Main workspace ──────────────────────────────────────────────────
 
-export function RecordsWorkspace({ farm, fields }) {
+export function RecordsWorkspace({ farm, fields, onNavigate }) {
   const farmId = farm?.id || null;
   const mappedFields = useMemo(() => (fields || []).filter((f) => Array.isArray(f.boundary) && f.boundary.length >= 3), [fields]);
   const fieldAreas = useMemo(() => { const m = {}; for (const f of mappedFields) m[f.id] = approxHectares(f.boundary); return m; }, [mappedFields]);
@@ -586,7 +586,18 @@ export function RecordsWorkspace({ farm, fields }) {
       }
     >
       {!mappedFields.length ? (
-        <Card padding={24}><EmptyState kicker="No fields" title="Map fields first" description="Records are attached to field boundaries. Head to Fields to map or import." /></Card>
+        <Card padding={24}>
+          <EmptyState
+            kicker="No fields"
+            title="Map fields first"
+            description="Spray and input records are attached to field boundaries, so start by adding at least one field."
+            actions={
+              onNavigate ? (
+                <Button variant="primary" size="sm" onClick={() => onNavigate("fields")}>Open fields</Button>
+              ) : null
+            }
+          />
+        </Card>
       ) : (
         <div className="tilth-records-layout" style={{ flex: "1 1 auto", minHeight: 0, display: "grid", gridTemplateColumns: "340px minmax(0, 1fr)", gap: 12, overflow: "hidden" }}>
           {/* Left: form + analytics */}
@@ -781,7 +792,13 @@ export function RecordsWorkspace({ farm, fields }) {
               <div className="tilth-scroll" style={{ display: "grid", gap: 4, minHeight: 0, overflowY: "auto", paddingRight: 2 }}>
                 {displayRecords.length ? displayRecords.map((r) => (
                   <RecordRow key={r.id} record={r} products={allProducts} fieldName={fieldLookup.get(r.fieldId) || r.fieldName || "—"} onDelete={() => removeRecord(r.id)} onEdit={() => startEdit(r)} />
-                )) : <Body size="sm">No records match your filters.</Body>}
+                )) : (
+                  <Body size="sm">
+                    {records.length === 0
+                      ? "No applications logged yet. Use the form to add your first spray, fertiliser, manure, or seed record."
+                      : "No records match your filters."}
+                  </Body>
+                )}
               </div>
             </Card>
 

@@ -241,6 +241,20 @@ function recentSlope(cleanedAsc, now, windowDays) {
   return num / den;
 }
 
+function metricDelta(cleanedAsc, key, now, windowDays) {
+  const cutoff = now - windowDays * DAY_MS;
+  const pts = cleanedAsc
+    .filter((s) => ms(s.scene_datetime) >= cutoff && Number.isFinite(s?.[key]))
+    .sort((a, b) => ms(a.scene_datetime) - ms(b.scene_datetime));
+  if (pts.length < 2) return null;
+  return pts[pts.length - 1][key] - pts[0][key];
+}
+
+function pushWarning(warnings, warning) {
+  if (!warning?.type || warnings.some((item) => item.type === warning.type)) return;
+  warnings.push(warning);
+}
+
 /**
  * The expected NDVI window for a given stage. Values are deliberately
  * loose — a healthy emerging crop can be 0.25-0.45 depending on
@@ -338,6 +352,8 @@ export function computeFieldHealth({
 
   // Flags.
   const flags = [];
+  const warnings = [];
+  const activeGrowth = stage === "emerging" || stage === "growing" || stage === "peak";
 
   // 7-day dip — find the closest-to-7d-ago scene and compare.
   if (cleanAsc.length >= 2 && stage !== "senescing" && stage !== "harvested") {
@@ -352,7 +368,18 @@ export function computeFieldHealth({
       }
     }
     if (best && Number.isFinite(v) && Number.isFinite(best.ndvi_mean)) {
-      if (best.ndvi_mean - v >= SEVEN_DAY_DIP) flags.push("ndvi_dip_7d");
+      if (best.ndvi_mean - v >= SEVEN_DAY_DIP) {
+        flags.push("ndvi_dip_7d");
+        pushWarning(warnings, {
+          type: "vegetation_drop",
+          severity: "high",
+          confidence: "medium",
+          title: "Sudden vegetation drop",
+          detail: `NDVI fell by ${(best.ndvi_mean - v).toFixed(2)} in about a week outside normal senescence.`,
+          action: "Walk the field and check for lodging, pest damage, spray effect, or missed cloud.",
+          evidence: ["NDVI 7-day drop"],
+        });
+      }
     }
   }
 
@@ -363,6 +390,15 @@ export function computeFieldHealth({
     v - cohortMedian <= -COHORT_DEVIATION
   ) {
     flags.push("below_cohort");
+    pushWarning(warnings, {
+      type: "below_farm_baseline",
+      severity: "medium",
+      confidence: "medium",
+      title: "Behind similar fields",
+      detail: `Latest NDVI is ${(cohortMedian - v).toFixed(2)} below the current farm median.`,
+      action: "Compare with neighbouring fields and check whether soil, crop stage, or recent operations explain the gap.",
+      evidence: ["Farm cohort comparison"],
+    });
   }
 
   // Stuck — emergence/growing window with negligible change over 21d.
@@ -381,6 +417,15 @@ export function computeFieldHealth({
     }
     if (earliest && Math.abs(v - earliest.ndvi_mean) < STUCK_DELTA) {
       flags.push("stuck");
+      pushWarning(warnings, {
+        type: "growth_stalled",
+        severity: "high",
+        confidence: "medium",
+        title: "Growth has stalled",
+        detail: "Vegetation index has barely moved over roughly three weeks during an active growth stage.",
+        action: "Check establishment, compaction, nutrition, water stress, and pest pressure.",
+        evidence: ["21-day NDVI movement"],
+      });
     }
   }
 
@@ -389,17 +434,46 @@ export function computeFieldHealth({
   if (Number.isFinite(v) && v < 0.30) {
     if (cropExpectation && cropExpectation.stageName !== "drilling" && cropExpectation.isLate) {
       flags.push("late_emergence");
+      pushWarning(warnings, {
+        type: "late_emergence",
+        severity: "high",
+        confidence: "medium",
+        title: "Late emergence",
+        detail: `${cropName || "Crop"} is past expected emergence timing but the canopy signal is still low.`,
+        action: "Check seedbed, soil temperature, slug/pest activity, waterlogging, and drilling depth.",
+        evidence: ["Crop calendar", "NDVI"],
+      });
     } else if (!cropExpectation) {
       const d = new Date(now);
       const apr1 = new Date(d.getFullYear(), 3, 1).getTime();
       const may15 = new Date(d.getFullYear(), 4, 15).getTime();
-      if (now >= apr1 && now <= may15) flags.push("late_emergence");
+      if (now >= apr1 && now <= may15) {
+        flags.push("late_emergence");
+        pushWarning(warnings, {
+          type: "late_emergence",
+          severity: "high",
+          confidence: "low",
+          title: "Late emergence",
+          detail: "The calendar suggests emergence should be visible, but the canopy signal is still low.",
+          action: "Confirm crop type and drilling date, then check establishment in the field.",
+          evidence: ["Calendar", "NDVI"],
+        });
+      }
     }
   }
 
   // Crop-specific: NDVI well below expected range for the current growth stage.
   if (cropExpectation && Number.isFinite(v) && v < cropExpectation.lo - 0.10 && stage !== "harvested" && stage !== "bare") {
     flags.push("below_expected_for_stage");
+    pushWarning(warnings, {
+      type: "below_expected_stage",
+      severity: "high",
+      confidence: "high",
+      title: "Below expected for crop stage",
+      detail: `${cropName} should normally be around NDVI ${cropExpectation.lo.toFixed(2)}-${cropExpectation.hi.toFixed(2)} at ${cropExpectation.stageName}, but the latest clean scene is ${v.toFixed(2)}.`,
+      action: "Check whether crop stage, drilling date, nutrition, disease, pests, or moisture stress explain the shortfall.",
+      evidence: ["Rotation crop", "Planting date", "NDVI"],
+    });
   }
 
   // SAR vs NDVI divergence — VH rising ≥ 1 dB while NDVI dropping
@@ -427,7 +501,18 @@ export function computeFieldHealth({
         const last = recentSar[recentSar.length - 1].vh_mean_db;
         const dDb = last - first;
         const ndviDelta = -slope14d * RECENT_DAYS;
-        if (dDb > 1 && ndviDelta > 0.05) flags.push("sar_ndvi_divergence");
+        if (dDb > 1 && ndviDelta > 0.05) {
+          flags.push("sar_ndvi_divergence");
+          pushWarning(warnings, {
+            type: "radar_optical_divergence",
+            severity: "medium",
+            confidence: "medium",
+            title: "Radar and optical signals disagree",
+            detail: `Radar VH rose by ${dDb.toFixed(1)} dB while NDVI fell, which can happen with lodging, canopy damage, or optical contamination.`,
+            action: "Use the radar workspace and inspect the field before treating this as a pure crop-health decline.",
+            evidence: ["Sentinel-1 SAR", "Sentinel-2 NDVI"],
+          });
+        }
       }
     }
   }
@@ -450,10 +535,95 @@ export function computeFieldHealth({
   if (
     latest &&
     Number.isFinite(latest.ndmi_mean) &&
-    latest.ndmi_mean < -0.1 &&
+    latest.ndmi_mean < -0.05 &&
     (stage === "growing" || stage === "peak")
   ) {
     flags.push("water_stress");
+    pushWarning(warnings, {
+      type: "moisture_stress",
+      severity: "medium",
+      confidence: "medium",
+      title: "Possible moisture stress",
+      detail: `NDMI is low (${latest.ndmi_mean.toFixed(2)}) during active canopy growth.`,
+      action: "Check soil moisture, rainfall history, irrigation, and lighter soil patches.",
+      evidence: ["Sentinel-2 NDMI", "Crop stage"],
+    });
+  }
+
+  const ndmiDelta14d = metricDelta(cleanAsc, "ndmi_mean", now, RECENT_DAYS);
+  if (activeGrowth && Number.isFinite(ndmiDelta14d) && ndmiDelta14d <= -0.08) {
+    flags.push("moisture_decline");
+    pushWarning(warnings, {
+      type: "moisture_decline",
+      severity: "medium",
+      confidence: "medium",
+      title: "Canopy moisture falling",
+      detail: `NDMI has dropped by ${Math.abs(ndmiDelta14d).toFixed(2)} over the recent scene window.`,
+      action: "Check rainfall deficit, rooting restrictions, irrigation scheduling, and drought-prone field zones.",
+      evidence: ["Sentinel-2 NDMI trend"],
+    });
+  }
+
+  const ndreDelta14d = metricDelta(cleanAsc, "ndre_mean", now, RECENT_DAYS);
+  if (
+    activeGrowth &&
+    latest &&
+    Number.isFinite(latest.ndre_mean) &&
+    (latest.ndre_mean < 0.18 || (Number.isFinite(ndreDelta14d) && ndreDelta14d <= -0.05))
+  ) {
+    flags.push("chlorophyll_stress");
+    pushWarning(warnings, {
+      type: "chlorophyll_stress",
+      severity: "medium",
+      confidence: Number.isFinite(ndreDelta14d) ? "medium" : "low",
+      title: "Possible chlorophyll or nitrogen stress",
+      detail: Number.isFinite(ndreDelta14d)
+        ? `NDRE is weak or falling (${ndreDelta14d.toFixed(2)} recent change), which can show stress before NDVI fully reacts.`
+        : `NDRE is low (${latest.ndre_mean.toFixed(2)}) for an active crop.`,
+      action: "Check recent nitrogen, leaf colour, disease pressure, and any known soil fertility variation.",
+      evidence: ["Sentinel-2 red-edge NDRE"],
+    });
+  }
+
+  if (
+    latest &&
+    (stage === "emerging" || stage === "growing") &&
+    Number.isFinite(latest.savi_mean) &&
+    latest.savi_mean < 0.22 &&
+    (!cropExpectation || (cropExpectation.daysSincePlanting ?? 0) >= 21)
+  ) {
+    flags.push("thin_canopy");
+    pushWarning(warnings, {
+      type: "thin_canopy",
+      severity: "medium",
+      confidence: "medium",
+      title: "Thin or patchy canopy",
+      detail: `SAVI is low (${latest.savi_mean.toFixed(2)}), which is useful where bare soil still influences NDVI.`,
+      action: "Check establishment evenness, seed rate, pest damage, and compaction lines.",
+      evidence: ["Sentinel-2 SAVI", "Crop stage"],
+    });
+  }
+
+  if (
+    latest &&
+    activeGrowth &&
+    Number.isFinite(latest.ndwi_mean) &&
+    Number.isFinite(latest.ndmi_mean) &&
+    latest.ndwi_mean > -0.05 &&
+    latest.ndmi_mean > 0.2 &&
+    Number.isFinite(v) &&
+    v < 0.5
+  ) {
+    flags.push("surface_wetness");
+    pushWarning(warnings, {
+      type: "surface_wetness",
+      severity: "medium",
+      confidence: "low",
+      title: "Possible wet surface or waterlogging",
+      detail: "Water-related indices are high while canopy strength is modest.",
+      action: "Check low spots, tramlines, drainage, and recent rainfall before travelling.",
+      evidence: ["Sentinel-2 NDWI", "Sentinel-2 NDMI", "NDVI"],
+    });
   }
 
   // Score components.
@@ -517,6 +687,11 @@ export function computeFieldHealth({
   if (flags.includes("sar_ndvi_divergence")) score -= 8;
   if (flags.includes("no_recent_data")) score -= 5;
   if (flags.includes("below_expected_for_stage")) score -= 12;
+  if (flags.includes("water_stress")) score -= 8;
+  if (flags.includes("moisture_decline")) score -= 7;
+  if (flags.includes("chlorophyll_stress")) score -= 8;
+  if (flags.includes("thin_canopy")) score -= 7;
+  if (flags.includes("surface_wetness")) score -= 6;
   score = clamp(score, 0, 100);
 
   // Confidence.
@@ -547,6 +722,14 @@ export function computeFieldHealth({
       return "Radar disagrees with NDVI — possible lodging or canopy break.";
     if (flags.includes("water_stress"))
       return "Moisture index (NDMI) suggests water stress — check soil moisture and irrigation.";
+    if (flags.includes("moisture_decline"))
+      return "Canopy moisture is falling — check rainfall deficit, irrigation, and drought-prone patches.";
+    if (flags.includes("chlorophyll_stress"))
+      return "Red-edge signal suggests possible chlorophyll or nitrogen stress.";
+    if (flags.includes("thin_canopy"))
+      return "Canopy still looks thin for this point in the season — check establishment.";
+    if (flags.includes("surface_wetness"))
+      return "Water indices suggest a possible wet surface or waterlogging risk.";
     if (flags.includes("below_cohort"))
       return "Trailing the rest of the farm. Compare with neighbours for context.";
     if (flags.includes("cloud_blocked"))
@@ -613,6 +796,7 @@ export function computeFieldHealth({
     trend,
     flags,
     summary,
+    warnings,
     confidence,
     latest,
     cropContext: cropExpectation ? {
@@ -648,6 +832,11 @@ export function computeFieldHealth({
       eviMean: latest?.evi_mean ?? null,
       ndwiMean: latest?.ndwi_mean ?? null,
       ndmiMean: latest?.ndmi_mean ?? null,
+      ndreMean: latest?.ndre_mean ?? null,
+      saviMean: latest?.savi_mean ?? null,
+      nbrMean: latest?.nbr_mean ?? null,
+      ndmiDelta14d,
+      ndreDelta14d,
     },
   };
 }
@@ -713,6 +902,10 @@ export const FLAG_LABELS = {
   cloud_blocked: "Cloud-blocked imagery",
   no_recent_data: "No recent imagery",
   water_stress: "Possible water stress",
+  moisture_decline: "Moisture falling",
+  chlorophyll_stress: "Chlorophyll/N stress",
+  thin_canopy: "Thin canopy",
+  surface_wetness: "Wet surface risk",
   below_expected_for_stage: "Below expected for growth stage",
 };
 

@@ -65,11 +65,10 @@ export async function userIdFromJwt(jwt) {
 }
 
 /**
- * Confirm that `userId` owns `fieldId` (via the field's farm). Returns the
- * full field row (id, name, boundary, farm_id) when ownership is OK, or null
- * when not. We do this with the SERVICE ROLE client + an explicit owner
- * filter rather than relying on the user JWT so this works regardless of
- * how the JWT was forwarded — the explicit filter is the actual auth check.
+ * Confirm that `userId` can edit `fieldId` (via the field's farm). Returns the
+ * full field row (id, name, boundary, farm_id) when access is OK, or null when
+ * not. Field refresh/extraction routes trigger background work, so membership
+ * is limited to roles that can edit the farm.
  */
 export async function fetchOwnedField(userId, fieldId) {
   if (!userId || !fieldId) return null;
@@ -79,8 +78,17 @@ export async function fetchOwnedField(userId, fieldId) {
     .from("tilth_fields")
     .select("id, name, boundary, farm_id, farms!inner(owner_user_id)")
     .eq("id", fieldId)
-    .eq("farms.owner_user_id", userId)
     .maybeSingle();
   if (error || !data) return null;
+  if (data.farms?.owner_user_id === userId) return data;
+
+  const { data: member, error: memberError } = await admin
+    .from("farm_members")
+    .select("id")
+    .eq("farm_id", data.farm_id)
+    .eq("user_id", userId)
+    .in("role", ["operator", "manager", "admin"])
+    .maybeSingle();
+  if (memberError || !member) return null;
   return data;
 }

@@ -149,8 +149,11 @@ export function useSarQueueStatus({ pollMs = 3000 } = {}) {
     let alive = true;
     const tick = async () => {
       try {
+        const auth = await getAuthHeader();
+        if (!auth) return;
         const res = await fetch(`${base}/api/sentinel1/status`, {
           method: "GET",
+          headers: { Authorization: auth },
         });
         if (!res.ok) return;
         const body = await res.json();

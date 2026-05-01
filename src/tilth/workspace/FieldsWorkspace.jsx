@@ -930,11 +930,24 @@ function DetailsPanel({
                 {currentPlanting.crop}
               </span>
               <Pill tone="ok" style={{ fontSize: 9 }}>Current</Pill>
+              {currentPlanting.source === "rotation" && (
+                <Pill tone="forest" style={{ fontSize: 9 }}>From rotation</Pill>
+              )}
             </div>
             <div style={{ fontFamily: fonts.mono, fontSize: 10, color: brand.muted }}>
               Planted {formatDate(currentPlanting.plantingDate)}
               {dsp != null ? ` · ${dsp} days ago` : ""}
+              {currentPlanting.status ? ` · ${currentPlanting.status}` : ""}
+              {currentPlanting.variety ? ` · ${currentPlanting.variety}` : ""}
             </div>
+            {(currentPlanting.targetYield || currentPlanting.expectedPrice || currentPlanting.variableCostPerHa || currentPlanting.nitrogenKgHa) && (
+              <div style={{ fontFamily: fonts.mono, fontSize: 9, color: brand.muted }}>
+                {currentPlanting.targetYield ? `Target ${currentPlanting.targetYield} t/ha` : ""}
+                {currentPlanting.expectedPrice ? ` · £${currentPlanting.expectedPrice}/t` : ""}
+                {currentPlanting.variableCostPerHa ? ` · £${currentPlanting.variableCostPerHa}/ha` : ""}
+                {currentPlanting.nitrogenKgHa ? ` · ${currentPlanting.nitrogenKgHa} kg N/ha` : ""}
+              </div>
+            )}
             {stage && (
               <div style={{
                 display: "flex", alignItems: "center", gap: 6,
